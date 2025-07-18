@@ -52,6 +52,10 @@ CFLAGS += $(INC) $(CWARN) -std=gnu99 -DUNIX $(COPT) -I$(VARIANT_DIR) $(CFLAGS_EX
 # This option has no effect on 64-bit builds.
 CFLAGS += -D_FILE_OFFSET_BITS=64
 
+# Force the use of 64-bits for time_t in C library functions on 32-bit platforms.
+# This option has no effect on 64-bit builds.
+CFLAGS += -D_TIME_BITS=64
+
 # Debugging/Optimization
 ifdef DEBUG
 COPT ?= -Og
@@ -115,16 +119,6 @@ LDFLAGS += $(LDFLAGS_MOD) $(LDFLAGS_ARCH) -lm $(LDFLAGS_EXTRA)
 
 # Flags to link with pthread library
 LIBPTHREAD = -lpthread
-
-ifeq ($(MICROPY_FORCE_32BIT),1)
-# Note: you may need to install i386 versions of dependency packages,
-# starting with linux-libc-dev:i386
-ifeq ($(MICROPY_PY_FFI),1)
-ifeq ($(UNAME_S),Linux)
-CFLAGS += -I/usr/include/i686-linux-gnu
-endif
-endif
-endif
 
 ifeq ($(MICROPY_USE_READLINE),1)
 INC += -I$(TOP)/shared/readline

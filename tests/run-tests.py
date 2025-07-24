@@ -15,8 +15,8 @@ from multiprocessing.pool import ThreadPool
 import threading
 import tempfile
 
-# Maximum time to run a PC-based test, in seconds.
-TEST_TIMEOUT = float(os.environ.get('MICROPY_TEST_TIMEOUT', 30))
+# Maximum time to run a single test, in seconds.
+TEST_TIMEOUT = float(os.environ.get("MICROPY_TEST_TIMEOUT", 30))
 
 # See stackoverflow.com/questions/2632199: __file__ nor sys.argv[0]
 # are guaranteed to always work, this one should though.
@@ -105,9 +105,6 @@ PC_PLATFORMS = ("darwin", "linux", "win32")
 # Tests to skip on specific targets.
 # These are tests that are difficult to detect that they should not be run on the given target.
 platform_tests_to_skip = {
-    "esp8266": (
-        "misc/rge_sm.py",  # incorrect values due to object representation C
-    ),
     "minimal": (
         "basics/class_inplace_op.py",  # all special methods not supported
         "basics/subclass_native_init.py",  # native subclassing corner cases not support
@@ -251,22 +248,27 @@ def detect_test_platform(pyb, args):
     output = run_feature_check(pyb, args, "target_info.py")
     if output.endswith(b"CRASH"):
         raise ValueError("cannot detect platform: {}".format(output))
-    platform, arch = str(output, "ascii").strip().split()
+    platform, arch, thread = str(output, "ascii").strip().split()
     if arch == "None":
         arch = None
     inlineasm_arch = detect_inline_asm_arch(pyb, args)
+    if thread == "None":
+        thread = None
 
     args.platform = platform
     args.arch = arch
     if arch and not args.mpy_cross_flags:
         args.mpy_cross_flags = "-march=" + arch
     args.inlineasm_arch = inlineasm_arch
+    args.thread = thread
 
     print("platform={}".format(platform), end="")
     if arch:
         print(" arch={}".format(arch), end="")
     if inlineasm_arch:
         print(" inlineasm={}".format(inlineasm_arch), end="")
+    if thread:
+        print(" thread={}".format(thread), end="")
     print()
 
 
@@ -328,7 +330,7 @@ def run_script_on_remote_target(pyb, args, test_file, is_special):
     try:
         had_crash = False
         pyb.enter_raw_repl()
-        output_mupy = pyb.exec_(script)
+        output_mupy = pyb.exec_(script, timeout=TEST_TIMEOUT)
     except pyboard.PyboardError as e:
         had_crash = True
         if not is_special and e.args[0] == "exception":
@@ -409,7 +411,7 @@ def run_micropython(pyb, args, test_file, test_file_abspath, is_special=False):
                     def send_get(what):
                         # Detect {\x00} pattern and convert to ctrl-key codes.
                         ctrl_code = lambda m: bytes([int(m.group(1))])
-                        what = re.sub(rb'{\\x(\d\d)}', ctrl_code, what)
+                        what = re.sub(rb"{\\x(\d\d)}", ctrl_code, what)
 
                         os.write(master, what)
                         return get()
@@ -783,9 +785,6 @@ def run_tests(pyb, tests, args, result_dir, num_threads=1):
         skip_tests.add(
             "float/float2int_intbig.py"
         )  # requires fp32, there's float2int_fp30_intbig.py instead
-        skip_tests.add(
-            "float/string_format.py"
-        )  # requires fp32, there's string_format_fp30.py instead
         skip_tests.add("float/bytes_construct.py")  # requires fp32
         skip_tests.add("float/bytearray_construct.py")  # requires fp32
         skip_tests.add("float/float_format_ints_power10.py")  # requires fp32
@@ -810,8 +809,8 @@ def run_tests(pyb, tests, args, result_dir, num_threads=1):
         skip_tests.add("cmdline/repl_sys_ps1_ps2.py")
         skip_tests.add("extmod/ssl_poll.py")
 
-    # Skip thread mutation tests on targets that don't have the GIL.
-    if args.platform in PC_PLATFORMS + ("rp2",):
+    # Skip thread mutation tests on targets that have unsafe threading behaviour.
+    if args.thread == "unsafe":
         for t in tests:
             if t.startswith("thread/mutate_"):
                 skip_tests.add(t)
@@ -1329,6 +1328,8 @@ the last matching regex is used:
             )
             if args.inlineasm_arch is not None:
                 test_dirs += ("inlineasm/{}".format(args.inlineasm_arch),)
+            if args.thread is not None:
+                test_dirs += ("thread",)
             if args.platform == "pyboard":
                 # run pyboard tests
                 test_dirs += ("float", "stress", "ports/stm32")
@@ -1337,9 +1338,9 @@ the last matching regex is used:
             elif args.platform == "renesas-ra":
                 test_dirs += ("float", "ports/renesas-ra")
             elif args.platform == "rp2":
-                test_dirs += ("float", "stress", "thread", "ports/rp2")
+                test_dirs += ("float", "stress", "ports/rp2")
             elif args.platform == "esp32":
-                test_dirs += ("float", "stress", "thread")
+                test_dirs += ("float", "stress")
             elif args.platform in ("esp8266", "minimal", "samd", "nrf"):
                 test_dirs += ("float",)
             elif args.platform == "WiPy":

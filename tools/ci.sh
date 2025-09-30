@@ -130,15 +130,12 @@ function ci_code_size_build {
 
 function ci_mpy_format_setup {
     sudo apt-get update
-    sudo apt-get install python2.7
     sudo pip3 install pyelftools
-    python2.7 --version
     python3 --version
 }
 
 function ci_mpy_format_test {
     # Test mpy-tool.py dump feature on bytecode
-    python2.7 ./tools/mpy-tool.py -xd tests/frozen/frozentest.mpy
     python3 ./tools/mpy-tool.py -xd tests/frozen/frozentest.mpy
 
     # Build MicroPython
@@ -340,6 +337,13 @@ function ci_qemu_setup_rv32 {
     qemu-system-riscv32 --version
 }
 
+function ci_qemu_setup_rv64 {
+    ci_gcc_riscv_setup
+    sudo apt-get update
+    sudo apt-get install qemu-system
+    qemu-system-riscv64 --version
+}
+
 function ci_qemu_build_arm_prepare {
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/qemu submodules
@@ -389,6 +393,12 @@ function ci_qemu_build_rv32 {
     # Test building and running native .mpy with rv32imc architecture.
     ci_native_mpy_modules_build rv32imc
     make ${MAKEOPTS} -C ports/qemu BOARD=VIRT_RV32 test_natmod
+}
+
+function ci_qemu_build_rv64 {
+    make ${MAKEOPTS} -C mpy-cross
+    make ${MAKEOPTS} -C ports/qemu BOARD=VIRT_RV64 submodules
+    make ${MAKEOPTS} -C ports/qemu BOARD=VIRT_RV64 test
 }
 
 ########################################################################################
@@ -546,6 +556,14 @@ CI_UNIX_OPTS_SANITIZE_UNDEFINED=(
     LDFLAGS_EXTRA="-fsanitize=undefined -fno-sanitize=nonnull-attribute"
 )
 
+CI_UNIX_OPTS_REPR_B=(
+    VARIANT=standard
+    CFLAGS_EXTRA="-DMICROPY_OBJ_REPR=MICROPY_OBJ_REPR_B -DMICROPY_PY_UCTYPES=0 -Dmp_int_t=int32_t -Dmp_uint_t=uint32_t"
+    MICROPY_FORCE_32BIT=1
+    RUN_TESTS_MPY_CROSS_FLAGS="--mpy-cross-flags=\"-march=x86 -msmall-int-bits=30\""
+
+)
+
 function ci_unix_build_helper {
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/unix "$@" submodules
@@ -683,12 +701,11 @@ function ci_unix_coverage_run_native_mpy_tests {
 function ci_unix_32bit_setup {
     sudo dpkg --add-architecture i386
     sudo apt-get update
-    sudo apt-get install gcc-multilib g++-multilib libffi-dev:i386 python2.7
+    sudo apt-get install gcc-multilib g++-multilib libffi-dev:i386
     sudo pip3 install setuptools
     sudo pip3 install pyelftools
     sudo pip3 install ar
     gcc --version
-    python2.7 --version
     python3 --version
 }
 
@@ -706,13 +723,12 @@ function ci_unix_coverage_32bit_run_native_mpy_tests {
 }
 
 function ci_unix_nanbox_build {
-    # Use Python 2 to check that it can run the build scripts
-    ci_unix_build_helper PYTHON=python2.7 VARIANT=nanbox CFLAGS_EXTRA="-DMICROPY_PY_MATH_CONSTANTS=1"
+    ci_unix_build_helper VARIANT=nanbox CFLAGS_EXTRA="-DMICROPY_PY_MATH_CONSTANTS=1"
     ci_unix_build_ffi_lib_helper gcc -m32
 }
 
 function ci_unix_nanbox_run_tests {
-    ci_unix_run_tests_full_no_native_helper nanbox PYTHON=python2.7
+    ci_unix_run_tests_full_no_native_helper nanbox
 }
 
 function ci_unix_longlong_build {
@@ -890,6 +906,17 @@ function ci_unix_qemu_riscv64_run_tests {
     (cd tests && MICROPY_MICROPYTHON=../ports/unix/build-coverage/micropython MICROPY_TEST_TIMEOUT=180 ./run-tests.py --exclude 'thread/stress_recurse.py|thread/thread_gc1.py')
 }
 
+function ci_unix_repr_b_build {
+    ci_unix_build_helper "${CI_UNIX_OPTS_REPR_B[@]}"
+    ci_unix_build_ffi_lib_helper gcc -m32
+}
+
+function ci_unix_repr_b_run_tests {
+    # ci_unix_run_tests_full_no_native_helper is not used due to
+    # https://github.com/micropython/micropython/issues/18105
+    ci_unix_run_tests_helper "${CI_UNIX_OPTS_REPR_B[@]}"
+}
+
 ########################################################################################
 # ports/windows
 
@@ -975,3 +1002,72 @@ function ci_alif_ae3_build {
     make ${MAKEOPTS} -C ports/alif BOARD=OPENMV_AE3 MCU_CORE=M55_DUAL
     make ${MAKEOPTS} -C ports/alif BOARD=ALIF_ENSEMBLE MCU_CORE=M55_DUAL
 }
+
+function _ci_help {
+    # Note: these lines must be indented with tab characters (required by bash <<-EOF)
+    cat <<-EOF
+	ci.sh: Script fragments used during CI
+
+	When invoked as a script, runs a sequence of ci steps,
+	stopping after the first error.
+
+	Usage:
+	    ${BASH_SOURCE} step1 step2...
+
+	Steps:
+	EOF
+    if type -path column > /dev/null 2>&1; then
+        grep '^function ci_' $0 | awk '{print $2}' | sed 's/^ci_//' | column
+    else
+        grep '^function ci_' $0 | awk '{print $2}' | sed 's/^ci_//'
+    fi
+    exit
+}
+
+function _ci_bash_completion {
+    echo "alias ci=\"$(readlink -f "$0")\"; complete -W '$(grep '^function ci_' $0 | awk '{print $2}' | sed 's/^ci_//')' ci"
+}
+
+function _ci_main {
+    case "$1" in
+        (-h|-?|--help)
+            _ci_help
+        ;;
+        (--bash-completion)
+            _ci_bash_completion
+        ;;
+        (-*)
+            echo "Unknown option: $1" 1>&2
+            exit 1
+        ;;
+        (*)
+            set -e
+            cd $(dirname "$0")/..
+            while [ $# -ne 0 ]; do
+                ci_$1
+                shift
+            done
+        ;;
+    esac
+}
+
+# https://stackoverflow.com/questions/2683279/how-to-detect-if-a-script-is-being-sourced
+sourced=0
+if [ -n "$ZSH_VERSION" ]; then
+  case $ZSH_EVAL_CONTEXT in *:file) sourced=1;; esac
+elif [ -n "$KSH_VERSION" ]; then
+  [ "$(cd -- "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")" != "$(cd -- "$(dirname -- "${.sh.file}")" && pwd -P)/$(basename -- "${.sh.file}")" ] && sourced=1
+elif [ -n "$BASH_VERSION" ]; then
+  (return 0 2>/dev/null) && sourced=1
+else # All other shells: examine $0 for known shell binary filenames.
+     # Detects `sh` and `dash`; add additional shell filenames as needed.
+  case ${0##*/} in sh|-sh|dash|-dash) sourced=1;; esac
+fi
+
+if [ $sourced -eq 0 ]; then
+    # invoked as a command
+    if [ "$#" -eq 0 ]; then
+        set -- --help
+    fi
+    _ci_main "$@"
+fi

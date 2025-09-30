@@ -421,6 +421,11 @@
 #define MICROPY_EMIT_RV32 (0)
 #endif
 
+// Whether to emit RISC-V RV32 Zba opcodes in native code
+#ifndef MICROPY_EMIT_RV32_ZBA
+#define MICROPY_EMIT_RV32_ZBA (0)
+#endif
+
 // Whether to enable the RISC-V RV32 inline assembler
 #ifndef MICROPY_EMIT_INLINE_RV32
 #define MICROPY_EMIT_INLINE_RV32 (0)
@@ -710,6 +715,13 @@
 // overflows from function calls made between checks.
 #ifndef MICROPY_STACK_CHECK_MARGIN
 #define MICROPY_STACK_CHECK_MARGIN (0)
+#endif
+
+// The size of a separate stack used for hard IRQ handlers, which should be
+// checked instead of the main stack when running a hard callback. 0 implies
+// there is no separate ISR stack to check.
+#ifndef MICROPY_STACK_SIZE_HARD_IRQ
+#define MICROPY_STACK_SIZE_HARD_IRQ (0)
 #endif
 
 // Whether to have an emergency exception buffer

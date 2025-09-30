@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       # Python 3.12 is the default for ubuntu-24.04, but that has compatibility issues with settrace tests.
       # Can remove this step when ubuntu-latest uses a more recent Python 3.x as the default.
       with:
@@ -121,7 +121,7 @@ jobs:
       run: tests/run-tests.py --print-failures
 
   nanbox:
-    runs-on: ubuntu-22.04 # use 22.04 to get python2, and libffi-dev:i386
+    runs-on: ubuntu-22.04 # use 22.04 to get libffi-dev:i386
     steps:
     - uses: actions/checkout@v5
     - name: Install packages
@@ -135,7 +135,7 @@ jobs:
       run: tests/run-tests.py --print-failures
 
   longlong:
-    runs-on: ubuntu-22.04 # use 22.04 to get python2, and libffi-dev:i386
+    runs-on: ubuntu-22.04 # use 22.04 to get libffi-dev:i386
     steps:
     - uses: actions/checkout@v5
     - name: Install packages
@@ -204,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       # Python 3.12 is the default for ubuntu-24.04, but that has compatibility issues with settrace tests.
       # Can remove this step when ubuntu-latest uses a more recent Python 3.x as the default.
       with:
@@ -217,11 +217,25 @@ jobs:
       if: failure()
       run: tests/run-tests.py --print-failures
 
+  repr_b:
+    runs-on: ubuntu-22.04 # use 22.04 to get libffi-dev:i386
+    steps:
+    - uses: actions/checkout@v5
+    - name: Install packages
+      run: source tools/ci.sh && ci_unix_32bit_setup
+    - name: Build
+      run: source tools/ci.sh && ci_unix_repr_b_build
+    - name: Run main test suite
+      run: source tools/ci.sh && ci_unix_repr_b_run_tests
+    - name: Print failures
+      if: failure()
+      run: tests/run-tests.py --print-failures
+
   macos:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v5
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.8'
     - name: Build
@@ -281,7 +295,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       # Python 3.12 is the default for ubuntu-24.04, but that has compatibility issues with settrace tests.
       # Can remove this step when ubuntu-latest uses a more recent Python 3.x as the default.
       with:
@@ -306,7 +320,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       # Python 3.12 is the default for ubuntu-24.04, but that has compatibility issues with settrace tests.
       # Can remove this step when ubuntu-latest uses a more recent Python 3.x as the default.
       with:

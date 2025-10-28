@@ -80,49 +80,69 @@ function ci_code_size_setup {
     ci_picotool_setup
 }
 
+function _ci_is_git_merge {
+    [[ $(git log -1 --format=%P "$1" | wc -w) > 1 ]]
+}
+
 function ci_code_size_build {
     # check the following ports for the change in their code size
-    PORTS_TO_CHECK=bmusxpdv
+    # Override the list by setting PORTS_TO_CHECK in the environment before invoking ci.
+    : ${PORTS_TO_CHECK:=bmusxpdv}
+    
     SUBMODULES="lib/asf4 lib/berkeley-db-1.xx lib/btstack lib/cyw43-driver lib/lwip lib/mbedtls lib/micropython-lib lib/nxp_driver lib/pico-sdk lib/stm32lib lib/tinyusb"
 
     # Default GitHub pull request sets HEAD to a generated merge commit
     # between PR branch (HEAD^2) and base branch (i.e. master) (HEAD^1).
     #
     # We want to compare this generated commit with the base branch, to see what
-    # the code size impact would be if we merged this PR.
-    REFERENCE=$(git rev-parse --short HEAD^1)
-    COMPARISON=$(git rev-parse --short HEAD)
+    # the code size impact would be if we merged this PR. During CI we are at a merge commit,
+    # so this tests the merged PR against its merge base.
+    # Override the refs by setting REFERENCE and/or COMPARISON in the environment before invoking ci.
+    : ${COMPARISON:=$(git rev-parse --short HEAD)}
+    : ${REFERENCE:=$(git rev-parse --short ${COMPARISON}^1)}
 
     echo "Comparing sizes of reference ${REFERENCE} to ${COMPARISON}..."
     git log --oneline $REFERENCE..$COMPARISON
 
-    function code_size_build_step {
-        COMMIT=$1
-        OUTFILE=$2
+    OLD_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
-        echo "Building ${COMMIT}..."
-        git checkout --detach $COMMIT
-        git submodule update --init $SUBMODULES
-        git show -s
-        tools/metrics.py clean $PORTS_TO_CHECK
-        tools/metrics.py build $PORTS_TO_CHECK | tee $OUTFILE
-        return $?
-    }
+    ( # Execute in a subshell so the trap & code_size_build_step doesn't leak
+        function code_size_build_step {
+            if [ ! -z "$OLD_BRANCH" ]; then
+                trap 'git checkout "$OLD_BRANCH"' RETURN EXIT ERR
+            fi
 
+            COMMIT=$1
+            OUTFILE=$2
+            IGNORE_ERRORS=$3
+
+            git checkout --detach $COMMIT
+            git submodule update --init $SUBMODULES
+            git show -s
+            tools/metrics.py clean "$PORTS_TO_CHECK"
+            # Allow errors from tools/metrics.py to propagate out of the pipe below.
+            set -o pipefail
+            tools/metrics.py build "$PORTS_TO_CHECK" | tee -a $OUTFILE || $IGNORE_ERRORS
+            return $?
+        }
+
+        # build reference, save to size0
+        # ignore any errors with this build, in case master is failing
+        echo "BUILDING $(git log --format='%s [%h]' -1 ${REFERENCE})" > ~/size0
+        code_size_build_step $REFERENCE ~/size0 true
+        # build PR/branch, save to size1
+        if _ci_is_git_merge "$COMPARISON"; then
+            echo "BUILDING $(git log --oneline -1 --format='%s [merge of %h]' ${COMPARISON}^2)"
+        else
+            echo "BUILDING $(git log --oneline -1 --formta='%s [%h]' ${COMPARISON})"
+        fi > ~/size1
+        code_size_build_step $COMPARISON ~/size1 false
+    )
+}
+
+function ci_code_size_report {
     # Allow errors from tools/metrics.py to propagate out of the pipe above.
-    set -o pipefail
-
-    # build reference, save to size0
-    # ignore any errors with this build, in case master is failing
-    code_size_build_step $REFERENCE ~/size0
-    # build PR/branch, save to size1
-    code_size_build_step $COMPARISON ~/size1
-    STATUS=$?
-
-    set +o pipefail
-    unset -f code_size_build_step
-
-    return $STATUS
+    (set -o pipefail; tools/metrics.py diff ~/size0 ~/size1 | tee diff)
 }
 
 ########################################################################################
@@ -230,7 +250,7 @@ function ci_esp32_build_c2_c6 {
 function ci_esp8266_setup {
     sudo pip3 install pyserial esptool==3.3.1 pyelftools ar
     wget https://micropython.org/resources/xtensa-lx106-elf-standalone.tar.gz
-    zcat xtensa-lx106-elf-standalone.tar.gz | tar x
+    (set -o pipefail; zcat xtensa-lx106-elf-standalone.tar.gz | tar x)
     # Remove this esptool.py so pip version is used instead
     rm xtensa-lx106-elf/bin/esptool.py
 }
@@ -631,7 +651,7 @@ function ci_unix_minimal_build {
 }
 
 function ci_unix_minimal_run_tests {
-    (cd tests && MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-minimal/micropython ./run-tests.py -e exception_chain -e self_type_check -e subclass_native_init -d basics)
+    make -C ports/unix VARIANT=minimal test
 }
 
 function ci_unix_standard_build {
@@ -929,6 +949,7 @@ function ci_windows_build {
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/windows submodules
     make ${MAKEOPTS} -C ports/windows CROSS_COMPILE=i686-w64-mingw32-
+    make ${MAKEOPTS} -C ports/windows CROSS_COMPILE=x86_64-w64-mingw32- BUILD=build-standard-w64
 }
 
 ########################################################################################
@@ -975,6 +996,7 @@ function ci_zephyr_install {
 }
 
 function ci_zephyr_build {
+    git submodule update --init lib/micropython-lib
     docker exec zephyr-ci west build -p auto -b qemu_x86 -- -DCONF_FILE=prj_minimal.conf
     docker exec zephyr-ci west build -p auto -b frdm_k64f
     docker exec zephyr-ci west build -p auto -b mimxrt1050_evk
@@ -983,9 +1005,7 @@ function ci_zephyr_build {
 
 function ci_zephyr_run_tests {
     docker exec zephyr-ci west build -p auto -b qemu_cortex_m3 -- -DCONF_FILE=prj_minimal.conf
-    # Issues with zephyr tests:
-    # - inf_nan_arith fails pow(-1, nan) test
-    (cd tests && ./run-tests.py -t execpty:"qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -monitor null -serial pty -kernel ../ports/zephyr/build/zephyr/zephyr.elf" -d basics float --exclude inf_nan_arith)
+    (cd tests && ./run-tests.py -t execpty:"qemu-system-arm -cpu cortex-m3 -machine lm3s6965evb -nographic -monitor null -serial pty -kernel ../ports/zephyr/build/zephyr/zephyr.elf")
 }
 
 ########################################################################################

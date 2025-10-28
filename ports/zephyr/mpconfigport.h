@@ -143,8 +143,13 @@ void mp_hal_signal_event(void);
 #define MICROPY_HW_MCU_NAME "unknown-cpu"
 #endif
 
-typedef intptr_t mp_int_t; // must be pointer size
-typedef uintptr_t mp_uint_t; // must be pointer size
+#ifdef CONFIG_ADC
+#define MICROPY_PY_MACHINE_ADC (1)
+#define MICROPY_PY_MACHINE_ADC_INCLUDEFILE "ports/zephyr/machine_adc.c"
+#define MICROPY_PY_MACHINE_ADC_READ (1)
+#define MICROPY_PY_MACHINE_ADC_READ_UV (1)
+#endif
+
 typedef long mp_off_t;
 
 #define MP_STATE_PORT MP_STATE_VM
@@ -171,4 +176,10 @@ typedef long mp_off_t;
         mp_handle_pending(true); \
         k_msleep(1); \
     } while (0);
+#endif
+
+// Compatibility switches
+
+#ifdef CONFIG_NEWLIB_LIBC
+#define MICROPY_PY_MATH_POW_FIX_NAN (1)
 #endif

@@ -10,6 +10,7 @@
 #endif
 
 #define MICROPY_PY_ESPNOW                (0)
+#define MICROPY_PY_SMARTCONFIG           (0)
 
 #define MICROPY_HW_ENABLE_SDCARD            (1)
 

@@ -39,7 +39,7 @@
 // as well as a fallback to generate MICROPY_GIT_TAG if the git repo or tags
 // are unavailable.
 #define MICROPY_VERSION_MAJOR 1
-#define MICROPY_VERSION_MINOR 27
+#define MICROPY_VERSION_MINOR 28
 #define MICROPY_VERSION_MICRO 0
 #define MICROPY_VERSION_PRERELEASE 1
 
@@ -505,6 +505,11 @@ typedef uint64_t mp_uint_t;
 // Whether to emit RISC-V RV32 Zba opcodes in native code
 #ifndef MICROPY_EMIT_RV32_ZBA
 #define MICROPY_EMIT_RV32_ZBA (0)
+#endif
+
+// Whether to emit RISC-V RV32 Zcmp opcodes in native code
+#ifndef MICROPY_EMIT_RV32_ZCMP
+#define MICROPY_EMIT_RV32_ZCMP (0)
 #endif
 
 // Whether to enable the RISC-V RV32 inline assembler

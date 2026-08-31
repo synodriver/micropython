@@ -43,12 +43,15 @@
 #if (__riscv_xlen == 32)
 #define MICROPY_EMIT_RV32           (1)
 #define MICROPY_EMIT_RV32_ZBA       (1)
+#define MICROPY_EMIT_RV32_ZCMP      (1)
 #define MICROPY_EMIT_INLINE_RV32    (1)
 #elif (__riscv_xlen == 64)
 #define MICROPY_PERSISTENT_CODE_LOAD_NATIVE (1)
 #else
 #error "Unsupported RISC-V platform!"
 #endif
+#elif defined(__powerpc__) && defined(__powerpc64__)
+#define MICROPY_MAKE_POINTER_CALLABLE(p) ((void *)((mp_uint_t)(p) | 1))
 #endif
 
 #define MICROPY_MALLOC_USES_ALLOCATED_SIZE (1)
@@ -67,11 +70,11 @@
 #define MICROPY_PY_MACHINE_PIN_BASE (1)
 #define MICROPY_VFS                 (1)
 #define MICROPY_VFS_ROM             (1)
-#define MICROPY_VFS_ROM_IOCTL       (0)
+#define MICROPY_VFS_ROM_IOCTL       (MICROPY_HW_ROMFS_ENABLE_PART0 || MICROPY_HW_ROMFS_ENABLE_PART1)
 
 // type definitions for the specific machine
 
-#if defined(__riscv) && (__riscv_xlen == 64)
+#if (defined(__riscv) && (__riscv_xlen == 64)) || (defined(__powerpc__) && defined(__powerpc64__))
 #define MP_SSIZE_MAX (0x7fffffffffffffff)
 #else
 #define MP_SSIZE_MAX (0x7fffffff)

@@ -64,14 +64,6 @@
 // Initialise TinyUSB device.
 static inline void mp_usbd_init_tud(void) {
     tusb_init();
-    #if MICROPY_HW_USB_CDC
-    tud_cdc_configure_t cfg = {
-        .rx_persistent = 0,
-        .tx_persistent = 1,
-        .tx_overwritabe_if_not_connected = 1,
-    };
-    tud_cdc_configure(&cfg);
-    #endif
 }
 
 // Run the TinyUSB device task
@@ -90,14 +82,18 @@ extern void mp_usbd_port_get_serial_number(char *buf);
 void mp_usbd_hex_str(char *out_str, const uint8_t *bytes, size_t bytes_len);
 
 // Length of built-in configuration descriptor
-#define MP_USBD_BUILTIN_DESC_CFG_LEN (TUD_CONFIG_DESC_LEN +                     \
-    (CFG_TUD_CDC ? (TUD_CDC_DESC_LEN) : 0) +  \
-    (CFG_TUD_MSC ? (TUD_MSC_DESC_LEN) : 0)    \
-    )
+#define MP_USBD_BUILTIN_DESC_CFG_LEN ( \
+    (CFG_TUD_CDC ? (TUD_CDC_DESC_LEN) : 0) + \
+    (CFG_TUD_MSC ? (TUD_MSC_DESC_LEN) : 0) + \
+    (CFG_TUD_NCM ? (TUD_CDC_NCM_DESC_LEN) : 0) + \
+    TUD_CONFIG_DESC_LEN)
 
 // Built-in USB device and configuration descriptor values
 extern const tusb_desc_device_t mp_usbd_builtin_desc_dev;
 extern const uint8_t mp_usbd_builtin_desc_cfg[MP_USBD_BUILTIN_DESC_CFG_LEN];
+#if (CFG_TUD_MAX_SPEED == OPT_MODE_HIGH_SPEED)
+extern const tusb_desc_device_qualifier_t mp_usbd_builtin_desc_qual;
+#endif
 
 void mp_usbd_task_callback(mp_sched_node_t *node);
 

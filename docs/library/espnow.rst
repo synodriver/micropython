@@ -32,32 +32,42 @@ ESP-NOW is a connection-less wireless communication protocol supporting:
 
 - Direct communication between up to 20 registered peers:
 
-  - Without the need for a wireless access point (AP),
+- Without the need for a wireless access point (AP),
 
 - Encrypted and unencrypted communication (up to 6 encrypted peers),
 
-- Message sizes up to 1490 bytes (For ESP-NOW v2),
+- Message sizes up to 1470 bytes (For ESP-NOW v2),
 
-- Can operate alongside Wifi operation (:doc:`network.WLAN<network.WLAN>`) on
+- Can operate alongside Wi-Fi operation (:doc:`network.WLAN<network.WLAN>`) on
   ESP32 and ESP8266 devices.
+
+- Track the Wi-Fi signal strength (RSSI) of ESP-NOW peer devices.
 
 It is especially useful for small IoT networks, latency sensitive or power
 sensitive applications (such as battery operated devices) and for long-range
 communication between devices (hundreds of metres).
 
-According to ESP-IDF, ESP-NOW supports two versions: v1.0 and v2.0. The maximum
-packet length supported by v2.0 devices is 1490 bytes, while the maximum packet
-length supported by v1.0 devices is 250 bytes. The v2.0 devices are capable of
-receiving packets from both v2.0 and v1.0 devices. In contrast, v1.0 devices can
-only receive packets from other v1.0 devices. However, v1.0 devices can receive
-v2.0 packets if the packet length is less than or equal to 250. For packets
-exceeding this length, the v1.0 devices will either truncate the data to the
+ESP-NOW Versions
+~~~~~~~~~~~~~~~~
+
+Since ESP-IDF V5.4, two ESP-NOW versions are supported when running on ESP32:
+V1 and V2.
+
+- The maximum packet length supported by V2 devices is 1470 bytes
+- The maximum packet length supported by V1 devices is 250 bytes.
+
+To check at runtime whether ESP-NOW V2 is available, check the value of
+`espnow.MAX_DATA_LEN`.
+
+ESP-NOW V2 devices are capable of receiving packets from both V2 and V1 devices.
+
+ESP-NOW V1 devices (including ESP8266) can receive packets from other V1
+devices, or from V2 devices if the packet length doesn't exceed 250 bytes. For
+packets exceeding this length, a V1 device will either truncate the data to the
 first 250 bytes or discard the packet entirely.
 
-This module also supports tracking the Wifi signal strength (RSSI) of peer
-devices.
-
-A simple example would be:
+Example
+~~~~~~~
 
 **Sender:** ::
 
@@ -157,23 +167,26 @@ Configuration
 
     .. data:: Options:
 
-        *rxbuf*: (default=528 or 3008) Get/set the size in bytes of the internal
-        buffer used to store incoming ESPNow packet data. The default size is
-        selected to fit two max-sized ESPNow packets (250 or 1490 bytes) with associated
+        *rxbuf*: (default=528 or 2972) Get/set the size in bytes of the internal
+        buffer used to store incoming ESP-NOW packet data. The default size is
+        selected to fit two max-sized ESP-NOW packets (250 or 1470 bytes) with associated
         mac_address (6 bytes), a message byte count (2 byte) and RSSI data plus
         buffer overhead. Increase this if you expect to receive a lot of large
         packets or expect bursty incoming traffic.
 
-        **Note:** The recv buffer is allocated by `ESPNow.active()`. Changing
-        this value will have no effect until the next call of
-        `ESPNow.active(True)<ESPNow.active()>`.
+        .. note:: If only using ESP-NOW V1 packets and low throughput, recommend
+                  setting ``rxbuf=528`` here to reduce memory overhead.
 
-        *timeout_ms*: (default=300,000) Default timeout (in milliseconds)
-        for receiving ESPNow messages. If *timeout_ms* is less than zero, then
+        .. note:: The recv buffer is allocated by `ESPNow.active()`. Changing
+                  this value will have no effect until the next call of
+                  `ESPNow.active(True)<ESPNow.active()>`.
+
+        *timeout_ms*: (default=300_000) Default timeout (in milliseconds)
+        for receiving ESP-NOW messages. If *timeout_ms* is less than zero, then
         wait forever. The timeout can also be provided as arg to
         `recv()`/`irecv()`/`recvinto()`.
 
-        *rate*: (ESP32 only) Set the transmission data rate for ESPNow packets.
+        *rate*: (ESP32 only) Set the transmission data rate for ESP-NOW packets.
         The default setting is `espnow.RATE_1M`. It's recommended to use one of
         the other ``espnow.RATE_nnn`` constants to set this, but it's also
         possible to pass an integer corresponding to the `enum wifi_phy_rate_t
@@ -223,12 +236,12 @@ after reboot/reset). This reduces the reliability of receiving ESP-NOW messages
 
     .. data:: Arguments:
 
-      - *mac*: byte string exactly ``espnow.ADDR_LEN`` (6 bytes) long or
+      - *mac*: byte string exactly `espnow.ADDR_LEN` (6 bytes) long or
         ``None``. If *mac* is ``None`` (ESP32 only) the message will be sent
         to all registered peers, except any broadcast or multicast MAC
         addresses.
 
-      - *msg*: string or byte-string up to ``espnow.MAX_DATA_LEN`` (250 or 1490)
+      - *msg*: string or byte-string up to `espnow.MAX_DATA_LEN` (250 or 1470)
         bytes long.
 
       - *sync*:
@@ -252,7 +265,7 @@ after reboot/reset). This reduces the reliability of receiving ESP-NOW messages
         `active()<network.WLAN.active>`.
       - ``OSError(num, "ESP_ERR_ESPNOW_NO_MEM")`` internal ESP-NOW buffers are
         full.
-      - ``ValueError()`` on invalid values for the parameters.
+      - ``ValueError()`` or ``TypeError()`` on invalid values or types for the parameters.
 
     **Note**: A peer will respond with success if its wifi interface is
     `active()<network.WLAN.active>` and set to the same channel as the sender,
@@ -336,10 +349,10 @@ after reboot/reset). This reduces the reliability of receiving ESP-NOW messages
     .. data:: Arguments:
 
         *data*: A list of at least two elements, ``[peer, msg]``. ``msg`` must
-        be a bytearray large enough to hold the message (250 or 1490 bytes). On the
-        ESP8266, ``peer`` should be a bytearray of 6 bytes. The MAC address of
-        the sender and the message will be stored in these bytearrays (see Note
-        on ESP32 below).
+        be a bytearray large enough to hold the received message (recommended at
+        least `espnow.MAX_DATA_LEN`). On the ESP8266, ``peer`` should be a
+        bytearray of 6 bytes. The MAC address of the sender and the message will
+        be stored in these bytearrays (see Note on ESP32 below).
 
         *timeout_ms*: (Optional) Timeout in milliseconds (see `ESPNow.recv()`).
 
@@ -351,6 +364,10 @@ after reboot/reset). This reduces the reliability of receiving ESP-NOW messages
     .. data:: Raises:
 
       - See `ESPNow.recv()`.
+
+      - This function will also raise a ``ValueError`` if the received message
+        is too large for the provided buffer. If this error is raised, received
+        message(s) will be lost.
 
     **Note:** On the ESP32:
 
@@ -488,7 +505,7 @@ must first register the sender and use the same encryption keys as the sender
         - ``OSError(num, "ESP_ERR_ESPNOW_CHAN")`` if a channel value was
           set that doesn't match the channel currently configured for this
           interface.
-        - ``ValueError()`` on invalid keyword args or values.
+        - ``ValueError()`` or ``TypeError()`` on invalid keyword args or values.
 
 .. method:: ESPNow.del_peer(mac)
 
@@ -503,7 +520,7 @@ must first register the sender and use the same encryption keys as the sender
         - ``OSError(num, "ESP_ERR_ESPNOW_NOT_INIT")`` if not initialised.
         - ``OSError(num, "ESP_ERR_ESPNOW_NOT_FOUND")`` if *mac* is not
           registered.
-        - ``ValueError()`` on invalid *mac* values.
+        - ``ValueError()`` or ``TypeError()`` on invalid *mac* values.
 
 .. method:: ESPNow.get_peer(mac) (ESP32 only)
 
@@ -519,7 +536,7 @@ must first register the sender and use the same encryption keys as the sender
         - ``OSError(num, "ESP_ERR_ESPNOW_NOT_INIT")`` if not initialised.
         - ``OSError(num, "ESP_ERR_ESPNOW_NOT_FOUND")`` if *mac* is not
           registered.
-        - ``ValueError()`` on invalid *mac* values.
+        - ``ValueError()`` or ``TypeError()`` on invalid *mac* values.
 
 .. method:: ESPNow.peer_count() (ESP32 only)
 
@@ -579,7 +596,11 @@ Callback Methods
 Constants
 ---------
 
+<<<<<<< HEAD
 .. data:: espnow.MAX_DATA_LEN(=250 or 1490)
+=======
+.. data:: espnow.MAX_DATA_LEN(=250 or 1470 for ESPNow V1 or V2)
+>>>>>>> temp
           espnow.KEY_LEN(=16)
           espnow.ADDR_LEN(=6)
           espnow.MAX_TOTAL_PEER_NUM(=20)

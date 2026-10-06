@@ -657,6 +657,10 @@ int esp32_ble5_periodic_sync(uint8_t addr_type, const uint8_t *addr, int sid, in
     if (sid < 0 || sid > 15 || skip < 0 || skip > 499 || timeout_ms < 100 || timeout_ms > 163840) {
         return MP_EINVAL;
     }
+    #if MYNEWT_VAL(BLE_ENABLE_CONN_REATTEMPT) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 4)
+    // IDF 5.5.0-5.5.3 clears the active sync state while a retry is in flight.
+    return MP_EOPNOTSUPP;
+    #endif
     #if MYNEWT_VAL(BLE_ENABLE_CONN_REATTEMPT)
     // IDF's retry path always supplies an explicit address, losing list mode.
     if (addr == NULL) {

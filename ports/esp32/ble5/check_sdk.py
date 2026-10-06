@@ -253,7 +253,7 @@ def npl_declarations(parser, npl_header, port_header):
     return declarations
 
 
-def check(headers, hci_header, compiler, npl_header=None, port_header=None):
+def check(headers, hci_header, compiler, idf_version, npl_header=None, port_header=None):
     parser = Parser(Language(tree_sitter_c.language()))
     directory = Path(__file__).resolve().parent
     header = (directory / "bluetooth_ble5.h").read_text(encoding="utf-8")
@@ -292,6 +292,12 @@ def check(headers, hci_header, compiler, npl_header=None, port_header=None):
             "-Werror=incompatible-pointer-types",
         ]
     )
+    version = tuple(int(part) for part in idf_version.split("."))
+    if len(version) == 2:
+        version += (0,)
+    if len(version) != 3:
+        raise ValueError("IDF version must have major.minor[.patch] form")
+    idf_version_value = (version[0] << 16) | (version[1] << 8) | version[2]
     checks = 0
     with tempfile.TemporaryDirectory(prefix="micropython-ble5-types-") as temporary:
         output = Path(temporary) / "generated"
@@ -308,6 +314,8 @@ def check(headers, hci_header, compiler, npl_header=None, port_header=None):
         ):
             definitions = [
                 "MYNEWT_VAL(x) MYNEWT_VAL_ ## x",
+                "ESP_IDF_VERSION_VAL(a,b,c) (((a)<<16)|((b)<<8)|(c))",
+                "ESP_IDF_VERSION " + str(idf_version_value),
                 "MICROPY_PY_BLUETOOTH 1",
                 "MICROPY_BLUETOOTH_NIMBLE 1",
                 "MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY 1",
@@ -326,6 +334,16 @@ def check(headers, hci_header, compiler, npl_header=None, port_header=None):
                 "MYNEWT_VAL_BLE_LL_CFG_FEAT_LE_CODED_PHY 1",
                 "BLE_ADV_INSTANCES 3",
             ]
+            if periodic:
+                backend_code = preprocess(header + backend, definitions)
+                sync_function = function(parser, backend_code, "esp32_ble5_periodic_sync")
+                expected_unsupported = int(bool(reattempt)) + int(
+                    bool(reattempt) and version < (5, 5, 4)
+                )
+                if sync_function.count("return MP_EOPNOTSUPP;") != expected_unsupported:
+                    raise ValueError(
+                        "periodic sync retry restriction does not match IDF " + idf_version
+                    )
             active = preprocess(gap, definitions)
             shapes = event_structure(parser, active)
             for name in (
@@ -389,7 +407,7 @@ def check(headers, hci_header, compiler, npl_header=None, port_header=None):
                     )
                     raise ValueError("C type check failed: " + path.name)
                 checks += 1
-                print("PASS", headers, path.name)
+                print("PASS", "IDF " + idf_version, path.name)
     return checks
 
 
@@ -398,11 +416,19 @@ if __name__ == "__main__":
     arguments.add_argument("--headers", type=Path, action="append", required=True)
     arguments.add_argument("--hci-header", type=Path, required=True)
     arguments.add_argument("--compiler", required=True)
+    arguments.add_argument("--idf-version", required=True)
     arguments.add_argument("--npl-header", type=Path)
     arguments.add_argument("--port-header", type=Path)
     args = arguments.parse_args()
     count = sum(
-        check(headers, args.hci_header, args.compiler, args.npl_header, args.port_header)
+        check(
+            headers,
+            args.hci_header,
+            args.compiler,
+            args.idf_version,
+            args.npl_header,
+            args.port_header,
+        )
         for headers in args.headers
     )
     print(f"{count} static syntax/type checks passed; no firmware built.")

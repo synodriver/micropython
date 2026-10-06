@@ -7,6 +7,7 @@
 
 #if MICROPY_PY_BLUETOOTH && SOC_BLE_50_SUPPORTED && CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT && !CONFIG_IDF_TARGET_ESP32P4
 #define MICROPY_ESP32_BLE5 (1)
+#include "esp_idf_version.h"
 #include "host/ble_hs.h"
 #include "nimble/ble.h"
 #define MICROPY_ESP32_BLE5_EXT_ADV MYNEWT_VAL(BLE_EXT_ADV)

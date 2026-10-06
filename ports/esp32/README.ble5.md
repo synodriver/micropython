@@ -55,13 +55,15 @@ qstr、模块和 GC 根指针提取。
 - 连接与周期同步使用相同的 GAP 分发入口，避免 SDK 自动重试共享回调
   字段时互相覆盖；普通连接的自动重试配置和原有连接/GATT/安全 IRQ 保留。
 
-原有 aioble 程序仍使用上述旧接口。新的扫描、广播和周期功能需要通过新增
-底层 API 使用，此次没有修改 aioble 的自动组包或异步 API。
-如果 aioble 已接管 IRQ，新增事件应接入其分发机制，不能重新调用 `ble.irq()`
-覆盖它。例如可复用 `aioble.core.ble` 和 `aioble.core.register_irq_handler`；
-这些是 aioble 内部接口，使用时应固定其版本。
-同一个控制器仍只有一个扫描过程，新扫描与 aioble 正在运行的扫描会冲突，
-返回忙错误；广播实例 0 与新实例相互独立。
+原有 aioble 程序仍使用上述旧接口。项目根目录新增的 `micropython-lib` submodule
+中，aioble 已适配这些 BLE5 API：`scan(..., extended=True, phys=...)`、
+`advertise(..., extended=True)`、`Device.connect(phys=...)`、连接 PHY 查询/更新、
+周期广播上下文和周期同步报告迭代器。使用方法见
+[`aioble/README.md`](../../micropython-lib/micropython/bluetooth/aioble/README.md#esp32-ble-5-extensions)。
+需要安装该 submodule 中的适配版或通过其 manifest 冻结；工作流的默认固件没有冻结
+aioble，安装上游原版也不会包含这些扩展。新增事件使用 aioble 自身的 IRQ 分发机制，
+应用不能另行调用 `ble.irq()` 覆盖它。控制器仍只有一个扫描过程；aioble 的新旧扫描
+统一管理，广播实例 0 与新实例独立，传统与扩展可连接广播不能同时等待连接。
 
 ## 新接口
 
@@ -140,8 +142,11 @@ min_conn_interval_us=0, max_conn_interval_us=0, phys=1)`：仍使用旧连接事
 API 没有添加、删除或清空该列表的方法。`gap_periodic_sync(None)` 取消待建立的同步。
 IDF 5.5–6.1 的自动重试会丢失列表模式。因此启用
 `CONFIG_BT_NIMBLE_ENABLE_CONN_REATTEMPT` 时，省略地址或 `addr=None`
-返回 `EOPNOTSUPP`；显式地址正常使用。需要列表模式时须在固件配置中
-关闭该选项，再预先配置广播者列表；此时普通连接也不再使用 SDK 自动重试。
+返回 `EOPNOTSUPP`。此外，IDF v5.5.0–v5.5.3 的 NimBLE 周期同步重试会破坏 SDK
+内部状态；该版本组合下即使使用显式地址，周期同步也返回 `EOPNOTSUPP`。此限制不
+影响普通连接的自动重试；IDF v5.5.4 及以上的显式地址同步不受 F8 限制。需要列表
+模式时须在固件配置中关闭自动重试，再预先配置广播者列表；此时普通连接也不再使用
+SDK 自动重试。
 
 ## 新 IRQ 元组
 
@@ -171,7 +176,8 @@ Bluetooth 绑定风格的 `OSError`。广播完成仅在 reason=0 时有有效�
   注册唯一性、上游结构变化时拒绝生成，以及六类芯片的 CMake 选择条件。
 - 基于 IDF 5.5、5.5.1、5.5.2、5.5.3、5.5.4、5.5.5、6.0、6.0.1、6.1
   对应 NimBLE 提交的真实头文件，本轮完成 162 项 C 语法和类型检查，
-  包括新增 API/后端/事件、生成的关闭入口和 ESP32 主机任务代码。
+  包括新增 API/后端/事件、生成的关闭入口和 ESP32 主机任务代码；检查同时验证
+  F8 的版本与自动重试限制分支。
   覆盖仅 PHY、扩展广播、周期广播、周期增强和自动重试开关。
 - Python 脚本的 Ruff 检查、格式检查和 `git diff --check`。
 
@@ -187,7 +193,8 @@ Bluetooth 绑定风格的 `OSError`。广播完成仅在 reason=0 时有有效�
 ```
 
 复查 SDK 接口：`ble5/check_sdk.py --headers <NimBLE host 头文件目录>
---hci-header <nimble/hci_common.h> --compiler <C 编译器>`。可重复提供
+--hci-header <nimble/hci_common.h> --compiler <C 编译器> --idf-version <版本>`。
+版本须与对应 SDK 头文件匹配。可重复提供
 `--headers`，脚本依赖 `pcpp`、`tree-sitter`、`tree-sitter-c`。
 检查使用 MSVC `/Zs` 或 GCC/Clang `-fsyntax-only`，不生成目标文件。
 

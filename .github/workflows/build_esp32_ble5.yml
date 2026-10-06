@@ -1,0 +1,93 @@
+name: Build ESP32 BLE 5 firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: BLE 5 firmware - ${{ matrix.target }} (${{ matrix.variant || 'default' }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: esp32s3
+            board: ESP32_GENERIC_S3
+            variant: ""
+          - target: esp32s3
+            board: ESP32_GENERIC_S3
+            variant: SPIRAM_OCT
+          - target: esp32c2
+            board: ESP32_GENERIC_C2
+            variant: ""
+          - target: esp32c3
+            board: ESP32_GENERIC_C3
+            variant: ""
+          - target: esp32c5
+            board: ESP32_GENERIC_C5
+            variant: ""
+          - target: esp32c6
+            board: ESP32_GENERIC_C6
+            variant: ""
+          - target: esp32h2
+            board: ESP32_GENERIC_H2
+            variant: ""
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Build and package BLE 5 firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: ${{ matrix.target }}
+          command: |
+            set -euo pipefail
+            make -j"$(nproc)" -C mpy-cross
+            cd ports/esp32
+            idf.py -B build-ble5 -D MICROPY_BOARD=${{ matrix.board }} -D MICROPY_BOARD_VARIANT="${{ matrix.variant }}" build
+
+            # Reject artifacts if the actual build disabled any BLE 5 feature.
+            for option in CONFIG_SOC_BLE_50_SUPPORTED CONFIG_BT_NIMBLE_ENABLED CONFIG_BT_CONTROLLER_ENABLED CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY CONFIG_BT_NIMBLE_EXT_ADV CONFIG_BT_NIMBLE_EXT_SCAN CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV CONFIG_BT_NIMBLE_ENABLE_PERIODIC_SYNC; do
+              if ! grep -Fxq "${option}=y" build-ble5/sdkconfig; then
+                echo "Required BLE 5 configuration missing: ${option}" >&2
+                exit 1
+              fi
+            done
+            ble5_source=$(find build-ble5 -name modbluetooth_esp32.c -print -quit)
+            test -n "${ble5_source}"
+            grep -Fq "MP_QSTR_gap_advertise_ext" "${ble5_source}"
+
+            idf.py -B build-ble5 merge-bin -o factory.bin -f raw
+            mkdir -p artifacts
+            cp build-ble5/factory.bin artifacts/factory.bin
+            cp build-ble5/micropython.bin artifacts/micropython.bin
+            cp build-ble5/sdkconfig artifacts/sdkconfig
+            printf "%s\n" \
+              "Board: ${{ matrix.board }}" \
+              "Board variant: ${{ matrix.variant || 'default' }}" \
+              "Target: ${{ matrix.target }}" \
+              "ESP-IDF: v5.5.5" \
+              "Source commit: $(git rev-parse HEAD)" \
+              "BLE 5: 2M/Coded PHY, extended advertising/scanning/connections, periodic advertising/synchronisation." \
+              "Flash the combined image: python -m esptool --chip ${{ matrix.target }} write_flash 0x0 factory.bin" \
+              "micropython.bin is the application only; it is not a combined image." \
+              "See ports/esp32/README.ble5.md in the source for the BLE 5 API." \
+              > artifacts/README.txt
+            cd artifacts
+            sha256sum factory.bin micropython.bin sdkconfig > SHA256SUMS
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: micropython-ble5-${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
+          path: ports/esp32/artifacts/
+          if-no-files-found: error
+          retention-days: 14

@@ -50,6 +50,12 @@ elseif (NOT MICROPY_FROZEN_MANIFEST)
     set(MICROPY_FROZEN_MANIFEST ${CMAKE_CURRENT_LIST_DIR}/boards/manifest.py)
 endif()
 
+# Enable BLE 5 only on targets with a native BLE 5 controller.  In particular,
+# ESP32-P4's optional remote controller must keep its existing configuration.
+if(IDF_TARGET MATCHES "^(esp32s3|esp32c2|esp32c3|esp32c5|esp32c6|esp32h2)$")
+    list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble5)
+endif()
+
 # Concatenate all sdkconfig files into a combined one for the IDF to use.
 file(WRITE ${CMAKE_BINARY_DIR}/sdkconfig.combined.in "")
 foreach(SDKCONFIG_DEFAULT ${SDKCONFIG_DEFAULTS})

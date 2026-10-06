@@ -48,6 +48,13 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
 
     include(${MICROPY_DIR}/py/usermod.cmake)
     include(${MICROPY_DIR}/extmod/extmod.cmake)
+
+    if(CONFIG_BT_NIMBLE_ENABLED AND CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT
+        AND IDF_TARGET MATCHES "^(esp32s3|esp32c2|esp32c3|esp32c5|esp32c6|esp32h2)$")
+        # The shared Bluetooth implementation has no method-extension hook.
+        # Generate ESP32-only adaptations, leaving extmod and other ports intact.
+        include(${MICROPY_PORT_DIR}/ble5/ble5.cmake)
+    endif()
 endif()
 
 list(APPEND MICROPY_QSTRDEFS_PORT

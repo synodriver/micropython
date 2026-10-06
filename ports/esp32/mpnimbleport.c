@@ -36,10 +36,28 @@
 #include "nimble/nimble_port_freertos.h"
 
 #include "extmod/nimble/modbluetooth_nimble.h"
+#include "ble5/bluetooth_ble5.h"
+
+#if MICROPY_ESP32_BLE5
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+static TaskHandle_t volatile esp32_ble5_host_task;
+
+bool esp32_ble5_is_host_task(void) {
+    return xTaskGetCurrentTaskHandle() == esp32_ble5_host_task;
+}
+#endif
 
 static void ble_host_task(void *param) {
     DEBUG_printf("ble_host_task\n");
+    #if MICROPY_ESP32_BLE5
+    esp32_ble5_host_task = xTaskGetCurrentTaskHandle();
+    #endif
     nimble_port_run(); // This function will return only when nimble_port_stop() is executed.
+    #if MICROPY_ESP32_BLE5
+    esp32_ble5_host_task = NULL;
+    #endif
     nimble_port_freertos_deinit();
 }
 
@@ -55,11 +73,17 @@ void mp_bluetooth_nimble_port_hci_deinit(void) {
 
 void mp_bluetooth_nimble_port_start(void) {
     DEBUG_printf("mp_bluetooth_nimble_port_start\n");
+    #if MICROPY_ESP32_BLE5_PERIODIC_ADV
+    esp32_ble5_periodic_init();
+    #endif
     nimble_port_freertos_init(ble_host_task);
 }
 
 int mp_bluetooth_nimble_port_shutdown(void) {
     DEBUG_printf("mp_bluetooth_nimble_port_shutdown\n");
+    #if MICROPY_ESP32_BLE5_PERIODIC_ADV
+    esp32_ble5_periodic_disable();
+    #endif
 
     #if MICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS_WITH_INTERLOCK
     // Release the GIL so any callbacks can run during the shutdown calls below.
@@ -69,6 +93,10 @@ int mp_bluetooth_nimble_port_shutdown(void) {
     // Despite the name, these is an ESP32-specific (no other NimBLE ports have these functions).
     // Calls ble_hs_stop() and waits for stack shutdown.
     nimble_port_stop();
+
+    #if MICROPY_ESP32_BLE5_PERIODIC_ADV
+    esp32_ble5_periodic_deinit();
+    #endif
 
     // Shuts down the event queue.
     nimble_port_deinit();

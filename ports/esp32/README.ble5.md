@@ -206,9 +206,10 @@ C6、H2 的通用板固件，另构建 `ESP32_GENERIC_S3` 的 `SPIRAM_OCT` 变�
 实际构建配置必须启用 BLE 5 各功能，并且生成
 ESP32 专用 Bluetooth 绑定，才会上传产物；不构建原始 ESP32、S2、P4。
 每种芯片分别上传 `micropython-ble5-<芯片>` artifact，保留 14 天，包含
-`factory.bin` 合并镜像、`micropython.bin` 应用镜像、实际 `sdkconfig`、
-SHA256 校验值和烧录说明。`factory.bin` 从地址 `0x0` 烧录；这些镜像
-采用对应通用板的默认 Flash/PSRAM 配置。S3 的 `SPIRAM_OCT` 构建使用
+官方 Makefile 生成的 `firmware.bin` 合并镜像、`micropython.bin` 应用镜像、
+实际 `sdkconfig`、SHA256 校验值和烧录说明。烧录地址按照实际 `sdkconfig`
+中的引导程序偏移生成，见下载包内的 `README.txt`；这些镜像采用对应通用板
+的默认 Flash/PSRAM 配置。S3 的 `SPIRAM_OCT` 构建使用
 该变体的 Octal PSRAM 配置，单独上传 `micropython-ble5-esp32s3-SPIRAM_OCT`
 artifact；默认 S3 构建仍上传 `micropython-ble5-esp32s3`。
 

@@ -26,6 +26,139 @@ GATT/安全实现。所有插入位置必须唯一；上游源码结构变化时
 输入文件列入 `CMAKE_CONFIGURE_DEPENDS`，修改后重新生成，随后参与正常
 qstr、模块和 GC 根指针提取。
 
+### `make_bindings.py` 的生成流程
+
+`make_bindings.py` 是一个构建时的源码生成器，不是固件运行时模块。它由
+`ble5/ble5.cmake` 在 CMake 配置阶段通过当前 ESP-IDF 使用的 Python 解释器执行：
+
+```text
+python ports/esp32/ble5/make_bindings.py \
+    --micropython <MicroPython 根目录> \
+    --output <CMake 构建目录>/ble5
+```
+
+它接收两个路径参数。`--micropython` 用来定位共享的
+`extmod/modbluetooth.c` 和 `extmod/nimble/modbluetooth_nimble.c`；`--output`
+是生成文件目录，通常是 `build-*/ble5`。生成器只写入该构建目录，不修改
+`extmod` 或 `ports/esp32/ble5` 中的输入文件。输出目录不存在时会自动创建；
+文件内容没有变化时不会重复写入，因而重复运行是幂等的。
+
+生成器首先读取共享的通用 Bluetooth 绑定和 NimBLE 后端，然后进行以下处理：
+
+1. **注入 ESP32 BLE5 头文件。** 在两个共享源文件中唯一的
+   `#include "extmod/modbluetooth.h"` 后插入 `#include "bluetooth_ble5.h"`。
+   这样生成文件可以使用 `MICROPY_ESP32_BLE5`、ESP-IDF/NimBLE 配置和
+   BLE5 后端声明；实际是否为 `1` 仍由编译阶段的芯片能力和 `sdkconfig` 决定。
+
+2. **扩大 IRQ 元组容量。** 将共享绑定中的
+   `MICROPY_PY_BLUETOOTH_MAX_EVENT_DATA_TUPLE_LEN` 从 5 改为 11，容纳扩展
+   扫描结果的地址、PHY、SID、周期间隔、数据状态和功率等字段。旧事件的
+   字段顺序和长度由共享代码继续维护。
+
+3. **保持 `None` 与空缓冲区的区别。** 在通用 `gap_advertise()` 参数解析中，
+   对 `adv_data` 和 `resp_data` 调用 `mp_get_buffer_raise()` 后，如果缓冲区长度
+   为零，就把指针改成一个非空的空字符串地址。这样传入 `None` 仍表示“复用
+   该实例已有数据”，传入 `b""` 或空 `bytearray` 则表示“清空数据”；后端可以
+   依据空指针与非空指针区分这两种语义。
+
+4. **注入 BLE5 Python 绑定和方法表。** 生成器从
+   `bluetooth_ble5_bindings.c` 提取 `// BEGIN METHODS` 到 `// END METHODS`、
+   `// BEGIN CONSTANTS` 到 `// END CONSTANTS` 之间的文本。标记之前的辅助函数
+   和对象定义会放到共享 BLE 方法表之前；方法表片段插入
+   `bluetooth_ble_locals_dict_table`，常量片段插入
+   `mp_module_bluetooth_globals_table`。因此 `BLE.ble5_features()`、扩展 GAP
+   方法、PHY 常量和 BLE5 IRQ 常量进入已有的 `bluetooth.BLE` 类型及
+   `bluetooth` 模块，不会创建第二个 Python 模块。
+
+5. **注入 BLE5 事件分发。** 将 `bluetooth_ble5_events.c` 的内容追加到生成的
+   通用绑定源末尾。该文件把 NimBLE 的 PHY 更新、扩展扫描、扩展广播完成、
+   周期同步和周期报告转换成 MicroPython IRQ 元组，并沿用共享实现的 GIL、
+   异常保护和临时 `memoryview` 生命周期规则。
+
+6. **选择 ESP32 专用 GAP 后端。** 生成器读取共享
+   `extmod/nimble/modbluetooth_nimble.c`，把以下旧 GAP 实现包在
+   `#if !MICROPY_ESP32_BLE5_EXT_ADV` 中：广播启动/停止、扫描回调、扫描启动/停止
+   和外设连接。这些函数在扩展广播能力启用时由 ESP32 BLE5 后端提供同名实现，
+   从而让旧的 `gap_advertise()`、`gap_scan()`、`gap_connect()` 继续使用原有
+   Python API，同时共享的 GATT、配对、安全和其他 NimBLE 代码保持不变。扩展
+   能力未启用时，原始 GAP 实现仍保留。
+
+7. **接入共享 GAP 事件和生命周期。** 在共享 NimBLE 事件分发中接入 PHY 更新
+   事件，并在通用回调中处理对应的完成通知；在 NimBLE reset 回调和 Bluetooth
+   初始化/反初始化入口接入 ESP32 BLE5 的状态清理及主机任务上下文检查。后者
+   防止 NimBLE 主机任务在自己的 IRQ 中同步等待自身退出。随后追加
+   `bluetooth_ble5_nimble.c`，提供 PHY、扩展广播/扫描/连接、周期广播/同步、
+   状态缓存和异步事件处理的 ESP32 实现。
+
+所有源码改写都通过 `replace_once()` 完成。它要求每个锚点在共享源中**恰好出现
+一次**；函数包裹则要求目标函数恰好匹配一次。锚点缺失、重复或绑定标记缺失会
+抛出异常并使 CMake 配置失败，而不是静默生成可能缺少功能的固件。这种检查也
+意味着升级 MicroPython 共享 Bluetooth 源码后，需要重新核对生成器中的锚点。
+
+`ble5.cmake` 将共享源、生成器和所有 BLE5 输入列入
+`CMAKE_CONFIGURE_DEPENDS`。配置阶段生成的
+`modbluetooth_esp32.c` 和 `modbluetooth_nimble_esp32.c` 随后被从共享
+`MICROPY_SOURCE_EXTMOD` 中替换/追加到 ESP32 目标，并参加常规的 C 预处理、
+qstr 提取、模块表生成和 GC 根指针注册。生成器本身不负责开启 BLE5 Kconfig；
+芯片筛选和 `boards/sdkconfig.ble5` 的追加由 ESP32 CMake 完成，宏的最终值由
+编译时的 ESP-IDF 配置决定。
+
+### `test_bindings.py`：生成器回归检查
+
+`ports/esp32/ble5/test_bindings.py` 是面向 `make_bindings.py` 的宿主机
+`unittest` 回归测试。它只读取和生成临时 C 文件，不需要 ESP-IDF、交叉编译器、
+CMake 配置或开发板，因此可以在没有 IDF 环境的机器上运行。测试使用临时目录，
+结束后自动清理，不会在源码树中留下生成文件，也不会修改共享 Bluetooth 源码。
+
+从 MicroPython 仓库根目录运行：
+
+```powershell
+& D:\conda\envs\hass\python.exe -B ports/esp32/ble5/test_bindings.py
+```
+
+在已经把 `python` 加入 PATH 的环境中，也可以使用：
+
+```text
+python3 -B ports/esp32/ble5/test_bindings.py
+```
+
+脚本通过 `Path(__file__).resolve().parents[3]` 定位仓库根目录，并为每个测试创建
+`micropython-ble5-generator-*` 临时目录。当前包含五项检查：
+
+1. **共享源不变、生成幂等且注册唯一。** 第一次生成后记录两个输出文件的时间戳，
+   第二次生成必须保持时间戳不变，说明内容相同不会重复写文件；同时用 SHA-256
+   比较生成前后的 `extmod/modbluetooth.c` 和
+   `extmod/nimble/modbluetooth_nimble.c`，确认生成器没有回写共享源。测试还检查
+   `bluetooth` 模块根指针、可扩展模块注册和 ESP32 BLE5 状态根指针各只出现一次，
+   防止拼接共享源时产生重复注册。
+
+2. **共享源锚点变化时提前失败。** 测试把共享 `modbluetooth.c` 复制到临时的
+   假仓库，并故意把 IRQ 元组容量锚点从 5 改成 6。生成器应抛出包含
+   `source anchor changed` 的 `ValueError`，且输出目录不应创建。它验证上游
+   共享源码发生结构变化时不会静默生成不完整文件。
+
+3. **目标后端函数缺失时拒绝生成。** 直接向
+   `keep_without_ext_adv()` 传入空源码和 `gap_scan_cb`，应抛出包含
+   `Bluetooth function changed` 的 `ValueError`。这覆盖了旧 GAP 函数包裹所依赖的
+   函数匹配保护。
+
+4. **主机任务关闭保护位于所有副作用之前。** 生成 NimBLE 输出后，测试定位
+   `mp_bluetooth_init()` 和 `mp_bluetooth_deinit()` 的函数体，确认
+   `esp32_ble5_is_host_task()` 检查及 `return MP_EBUSY` 出现在停止广播、停止扫描、
+   关闭 NimBLE、清理根指针以及初始化/重置状态等操作之前。该检查验证源码生成
+   顺序，避免主机任务自等待或部分关闭；它不模拟 FreeRTOS 调度。
+
+5. **两个 CMake 门控使用相同的芯片集合。** 测试读取
+   `ports/esp32/CMakeLists.txt` 和 `ports/esp32/esp32_common.cmake`，提取正则
+   `IDF_TARGET MATCHES` 的目标列表，并断言两处都严格包含
+   `esp32s3`、`esp32c2`、`esp32c3`、`esp32c5`、`esp32c6`、`esp32h2`。这样可以防止
+   sdkconfig 追加和生成器启用条件出现不一致，也确保原始 ESP32、S2、P4 不被误选。
+
+测试通过时会输出类似 `Ran 5 tests ... OK`。失败通常表示共享源码锚点、生成顺序、
+根指针注册或目标筛选发生变化，应先检查 `make_bindings.py` 与 CMake，再进行固件构建。
+该测试不检查 C 语法和链接符号、不展开实际 IDF Kconfig、不运行 NimBLE 控制器，
+也不能替代工作流编译、烧录和硬件互操作测试。
+
 ## 兼容行为
 
 - 原有 `gap_advertise()` 固定使用实例 0、传统 PDU、1M PHY，广播和扫描

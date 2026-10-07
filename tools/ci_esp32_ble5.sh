@@ -1,0 +1,80 @@
+#!/bin/bash
+
+set -euo pipefail
+
+board=$1
+variant=$2
+target=$3
+
+# The ESP-IDF image entrypoint activates the SDK before calling this script.
+: "${IDF_PATH:?ESP-IDF environment is not activated}"
+test -f "${IDF_PATH}/tools/idf.py"
+
+# Do not allow git-describe's bare hash fallback into the REPL banner.
+if git_tag=$(git describe --tags --dirty --match 'v[1-9].*' --abbrev=10 2>/dev/null); then
+    # Match the semver formatting in py/makeversionhdr.py.
+    MICROPY_GIT_TAG=$(printf '%s\n' "${git_tag}" | sed 's/-/./2g')
+else
+    # Match makeversionhdr.py's mpconfig.h fallback when no matching tag exists.
+    version_major=$(sed -n 's/^#define MICROPY_VERSION_MAJOR //p' py/mpconfig.h)
+    version_minor=$(sed -n 's/^#define MICROPY_VERSION_MINOR //p' py/mpconfig.h)
+    version_micro=$(sed -n 's/^#define MICROPY_VERSION_MICRO //p' py/mpconfig.h)
+    version_prerelease=$(sed -n 's/^#define MICROPY_VERSION_PRERELEASE //p' py/mpconfig.h)
+    MICROPY_GIT_TAG="v${version_major}.${version_minor}.${version_micro}"
+    if [ "${version_prerelease}" -ne 0 ]; then
+        MICROPY_GIT_TAG+="-preview"
+    fi
+    echo "No matching Git tag found; using ${MICROPY_GIT_TAG}" >&2
+fi
+case "${MICROPY_GIT_TAG}" in
+    v[1-9].*) ;;
+    *) echo "Invalid MicroPython version tag: ${MICROPY_GIT_TAG}" >&2; exit 1 ;;
+esac
+MICROPY_GIT_HASH=$(git rev-parse --short HEAD)
+export MICROPY_GIT_TAG MICROPY_GIT_HASH
+echo "MicroPython version: ${MICROPY_GIT_TAG} (${MICROPY_GIT_HASH})"
+
+make -j"$(nproc)" -C mpy-cross
+make_args=("BOARD=${board}" "BUILD=build-ble5")
+if [ -n "${variant}" ]; then
+    make_args+=("BOARD_VARIANT=${variant}")
+fi
+make -C ports/esp32 "${make_args[@]}" submodules
+make -j"$(nproc)" -C ports/esp32 "${make_args[@]}"
+
+# Reject artifacts if the actual build disabled any BLE 5 feature.
+for option in CONFIG_SOC_BLE_50_SUPPORTED CONFIG_BT_NIMBLE_ENABLED CONFIG_BT_CONTROLLER_ENABLED CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_2M_PHY CONFIG_BT_NIMBLE_LL_CFG_FEAT_LE_CODED_PHY CONFIG_BT_NIMBLE_EXT_ADV CONFIG_BT_NIMBLE_EXT_SCAN CONFIG_BT_NIMBLE_ENABLE_PERIODIC_ADV CONFIG_BT_NIMBLE_ENABLE_PERIODIC_SYNC; do
+    if ! grep -Fxq "${option}=y" ports/esp32/build-ble5/sdkconfig; then
+        echo "Required BLE 5 configuration missing: ${option}" >&2
+        exit 1
+    fi
+done
+ble5_source=$(find ports/esp32/build-ble5 -name modbluetooth_esp32.c -print -quit)
+test -n "${ble5_source}"
+grep -Fq "MP_QSTR_gap_advertise_ext" "${ble5_source}"
+version_header=$(find ports/esp32/build-ble5 -name mpversion.h -print -quit)
+test -n "${version_header}"
+grep -Fqx "#define MICROPY_GIT_TAG \"${MICROPY_GIT_TAG}\"" "${version_header}"
+grep -Fqx "#define MICROPY_GIT_HASH \"${MICROPY_GIT_HASH}\"" "${version_header}"
+
+mkdir -p ports/esp32/artifacts
+test -f ports/esp32/build-ble5/firmware.bin
+cp ports/esp32/build-ble5/firmware.bin ports/esp32/artifacts/firmware.bin
+cp ports/esp32/build-ble5/micropython.bin ports/esp32/artifacts/micropython.bin
+cp ports/esp32/build-ble5/sdkconfig ports/esp32/artifacts/sdkconfig
+# Use the same starting offset and fallback as makeimg.py.
+flash_offset=$(sed -n 's/^CONFIG_BOOTLOADER_OFFSET_IN_FLASH=//p' ports/esp32/build-ble5/sdkconfig)
+flash_offset=${flash_offset:-0x1000}
+printf "%s\n" \
+    "Board: ${board}" \
+    "Board variant: ${variant:-default}" \
+    "Target: ${target}" \
+    "ESP-IDF: v5.5.5" \
+    "Source commit: $(git rev-parse HEAD)" \
+    "BLE 5: 2M/Coded PHY, extended advertising/scanning/connections, periodic advertising/synchronisation." \
+    "Flash the combined image: python -m esptool --chip ${target} write_flash ${flash_offset} firmware.bin" \
+    "micropython.bin is the application only; it is not a combined image." \
+    "See ports/esp32/README.ble5.md in the source for the BLE 5 API." \
+    > ports/esp32/artifacts/README.txt
+cd ports/esp32/artifacts
+sha256sum firmware.bin micropython.bin sdkconfig > SHA256SUMS

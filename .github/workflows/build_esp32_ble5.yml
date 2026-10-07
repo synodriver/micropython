@@ -43,6 +43,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Build and package BLE 5 firmware
         uses: espressif/esp-idf-ci-action@v1
@@ -51,8 +52,29 @@ jobs:
           target: ${{ matrix.target }}
           command: |
             set -euo pipefail
-            # Match the semver formatting in py/makeversionhdr.py.
-            MICROPY_GIT_TAG=$(git describe --tags --dirty --always --match 'v[1-9].*' --abbrev=10 | sed 's/-/./2g')
+            # Do not allow git-describe's bare hash fallback into the REPL
+            # banner. The checkout above requests the complete history and
+            # tags, matching the version information used by official builds.
+            if git_tag=$(git describe --tags --dirty --match 'v[1-9].*' --abbrev=10 2>/dev/null); then
+              # Match the semver formatting in py/makeversionhdr.py.
+              MICROPY_GIT_TAG=$(printf '%s\n' "${git_tag}" | sed 's/-/./2g')
+            else
+              # Match makeversionhdr.py's mpconfig.h fallback when no matching
+              # tag is available in the checkout.
+              version_major=$(sed -n 's/^#define MICROPY_VERSION_MAJOR //p' py/mpconfig.h)
+              version_minor=$(sed -n 's/^#define MICROPY_VERSION_MINOR //p' py/mpconfig.h)
+              version_micro=$(sed -n 's/^#define MICROPY_VERSION_MICRO //p' py/mpconfig.h)
+              version_prerelease=$(sed -n 's/^#define MICROPY_VERSION_PRERELEASE //p' py/mpconfig.h)
+              MICROPY_GIT_TAG="v${version_major}.${version_minor}.${version_micro}"
+              if [ "${version_prerelease}" -ne 0 ]; then
+                MICROPY_GIT_TAG+="-preview"
+              fi
+              echo "No matching Git tag found; using ${MICROPY_GIT_TAG}" >&2
+            fi
+            case "${MICROPY_GIT_TAG}" in
+              v[1-9].*) ;;
+              *) echo "Invalid MicroPython version tag: ${MICROPY_GIT_TAG}" >&2; exit 1 ;;
+            esac
             MICROPY_GIT_HASH=$(git rev-parse --short HEAD)
             export MICROPY_GIT_TAG MICROPY_GIT_HASH
             echo "MicroPython version: ${MICROPY_GIT_TAG} (${MICROPY_GIT_HASH})"
@@ -74,6 +96,10 @@ jobs:
             ble5_source=$(find ports/esp32/build-ble5 -name modbluetooth_esp32.c -print -quit)
             test -n "${ble5_source}"
             grep -Fq "MP_QSTR_gap_advertise_ext" "${ble5_source}"
+            version_header=$(find ports/esp32/build-ble5 -name mpversion.h -print -quit)
+            test -n "${version_header}"
+            grep -Fqx "#define MICROPY_GIT_TAG \"${MICROPY_GIT_TAG}\"" "${version_header}"
+            grep -Fqx "#define MICROPY_GIT_HASH \"${MICROPY_GIT_HASH}\"" "${version_header}"
 
             mkdir -p ports/esp32/artifacts
             test -f ports/esp32/build-ble5/firmware.bin

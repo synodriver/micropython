@@ -245,6 +245,57 @@ ble.gap_advertise_ext_stop(1, remove=True)
 位掩码；`coded=0/1/2` 分别表示无偏好、S2、S8。默认 PHY 设置不接受
 S2/S8 参数。设置异步生效，结果由 `IRQ_PHY_UPDATE` 上报。
 
+### 发射功率
+
+`gap_set_tx_power(power_type, handle, power_level)` 同步调用 ESP-IDF 的
+`esp_ble_tx_power_set_enhanced()`，成功返回 `None`，不产生新的 IRQ。
+`ble5_features()` 的 `tx_power=True` 表示提供此接口。
+SDK 在 S3/C2/C3/C5/C6/H2 上提供该函数，S3 共用 C3 的头文件和控制器实现。
+它自身不要求开启扩展或周期广播；本项目将它放在现有 `MICROPY_ESP32_BLE5`
+条件内，仅在启用 BLE5 的原生控制器固件中暴露。原始 ESP32、S2、P4
+以及其他 port 不增加接口或常量。
+
+| `bluetooth` 常量 | `handle` 含义 |
+| --- | --- |
+| `TX_POWER_TYPE_DEFAULT` | 必须为 0；设置尚未单独指定功率的类型的默认值 |
+| `TX_POWER_TYPE_ADV` | 本机广播实例编号；传统广播为 0，扩展广播使用 `instance`，不是 SID |
+| `TX_POWER_TYPE_SCAN` | 必须为 0；主动扫描请求的发射功率 |
+| `TX_POWER_TYPE_INIT` | 必须为 0；发起连接时的发射功率 |
+| `TX_POWER_TYPE_CONN` | 已建立连接的 `conn_handle`；不是周期同步句柄 |
+
+IDF v5.5.5 的 C2/C5/C6/H2 实现将 INIT 映射到 SCAN，二者共享功率设置，
+不能分别保持两个值；S3/C3 分别转交对应类型。此绑定保留 SDK 的行为。
+
+`power_level` 是 SDK 的档位索引，**不是 dBm 数值**。优先使用常量：
+`TX_POWER_N24/N21/N18/N15/N12/N9/N6/N3/N0`（索引 0..8，对应 -24..0 dBm），
+`TX_POWER_P3/P6/P9/P12/P15/P18/P20`（索引 9..15，对应 +3..+20 dBm）。
+例如 `TX_POWER_N0` 的值为 8，传入数值 0 会请求 -24 dBm。
+C6 的 SDK 枚举最低为 `TX_POWER_N15`（索引 3）；其 `bluetooth` 模块不提供
+`TX_POWER_N24/N21/N18`，传入索引 0..2 会抛出 `ValueError`。其他目标支持索引 0..15。
+最高档位只是请求值，实际功率由芯片、PHY 和控制器限制决定；S3/C3 的 SDK
+说明指出功率分辨率为 3 dBm，实际值可能比请求值低 0..2 dBm。
+
+```python
+ble.gap_set_tx_power(bluetooth.TX_POWER_TYPE_DEFAULT, 0, bluetooth.TX_POWER_P3)
+ble.gap_set_tx_power(bluetooth.TX_POWER_TYPE_SCAN, 0, bluetooth.TX_POWER_N0)
+ble.gap_set_tx_power(bluetooth.TX_POWER_TYPE_ADV, 0, bluetooth.TX_POWER_P9)
+# 建立连接后，使用连接 IRQ 返回的句柄：
+# ble.gap_set_tx_power(bluetooth.TX_POWER_TYPE_CONN, conn_handle, bluetooth.TX_POWER_P3)
+# 配置扩展广播实例 1 后：
+# ble.gap_set_tx_power(bluetooth.TX_POWER_TYPE_ADV, 1, bluetooth.TX_POWER_P9)
+```
+
+参数必须是整数；类型范围为 0..4，句柄范围为 0..65535，档位范围为 0..15（C6 为 3..15）。
+越界或 DEFAULT/SCAN/INIT 使用非零句柄时抛出 `ValueError`，不会调用 SDK。
+BLE 未启用时，合法参数调用返回 `OSError(ENODEV)`；SDK 失败通过端口已有的
+`check_esp_err()` 抛出 `OSError`，不使用 NimBLE 错误码映射。
+具体广播/连接句柄是否有效及功率是否可设置由控制器判定。
+连接功率应在连接建立后设置；广播实例移除、重新配置，或 BLE 关闭重启后，应按需重新设置。
+当前扩展广播参数使用 `tx_power=127`（无偏好），没有指定优先级更高的 HCI 广播功率。
+这个接口不修改广播载荷中的 TX Power AD 字段，也不会改变对端的发射功率。
+aioble 对应接口为 `aioble.set_tx_power()`，参数及常量同名，自动启用 BLE。
+连接对象的 `connection.set_tx_power(power_level)` 自动使用连接句柄并检查连接身份。
+
 `gap_advertise_ext(interval_us, adv_data=None, *, resp_data=None, instance=1,
 connectable=True, scannable=False, primary_phy=1, secondary_phy=1, sid=0,
 timeout_ms=0)`：实例必须大于 0；主 PHY 仅允许 1M/Coded，辅助 PHY
@@ -326,10 +377,28 @@ Bluetooth 绑定风格的 `OSError`。广播完成仅在 reason=0 时有有效�
 ```
 
 复查 SDK 接口：`ble5/check_sdk.py --headers <NimBLE host 头文件目录>
---hci-header <nimble/hci_common.h> --compiler <C 编译器> --idf-version <版本>`。
+--hci-header <nimble/hci_common.h> --bt-header <目标芯片的 esp_bt.h>
+--compiler <C 编译器> --idf-version <版本>`。
+`--bt-header` 用于读取真实的增强功率类型、档位枚举和 setter 原型；S3 使用 C3 的头文件。
 版本须与对应 SDK 头文件匹配。可重复提供
 `--headers`，脚本依赖 `pcpp`、`tree-sitter`、`tree-sitter-c`。
 检查使用 MSVC `/Zs` 或 GCC/Clang `-fsyntax-only`，不生成目标文件。
+
+发射功率接口本轮使用 IDF v5.5.5 的 C2/C3/C5/C6/H2 五套 `esp_bt.h`
+完成 **90 项** C 语法/类型检查（每套 18 项，S3 共用 C3 头文件），并核对
+aioble 常量与 SDK 枚举一致；未把这些检查当作固件编译或链接证据。
+aioble 宿主回归 **115 项通过**，绑定生成器 **5 项通过**。
+新增的实机参数测试 `tests/ports/esp32/bluetooth_tx_power.py` 检查类型、范围、
+整数溢出、C6 档位和未启用 BLE 时的错误；不启动控制器或发射无线信号。
+本轮仅通过其 MicroPython 字节码语法检查，未在固件上执行。烧录后可运行：
+
+```powershell
+& D:\conda\envs\hass\python.exe tools/pyboard.py --device COM3 tests/ports/esp32/bluetooth_tx_power.py
+```
+
+替换为实际串口；期望输出见同目录 `.py.exp`，不支持的固件输出 `SKIP`。
+成功设置功率、广播实例重建、连接断开/重连、协议栈重启后的重新设置，以及不同
+芯片和 PHY 下的实际射频输出仍须实机验收。
 
 ## 手动构建固件
 

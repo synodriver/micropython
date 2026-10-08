@@ -1,5 +1,12 @@
 // Included before the shared BLE method table by make_bindings.py.
 #if MICROPY_ESP32_BLE5
+#include "esp_bt.h"
+
+#if CONFIG_IDF_TARGET_ESP32C6
+#define ESP32_BLE5_TX_POWER_MIN ESP_PWR_LVL_N15
+#else
+#define ESP32_BLE5_TX_POWER_MIN ESP_PWR_LVL_N24
+#endif
 
 static int esp32_ble5_handle(mp_obj_t value) {
     mp_int_t handle = mp_obj_get_int(value);
@@ -14,6 +21,7 @@ static mp_obj_t bluetooth_ble5_features(mp_obj_t self_in) {
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_phys), MP_OBJ_NEW_SMALL_INT(esp32_ble5_phy_mask()));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_extended_advertising), mp_obj_new_bool(MICROPY_ESP32_BLE5_EXT_ADV));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_periodic_advertising), mp_obj_new_bool(MICROPY_ESP32_BLE5_PERIODIC_ADV));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power), mp_const_true);
     #if MICROPY_ESP32_BLE5_EXT_ADV
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_advertising_instances), MP_OBJ_NEW_SMALL_INT(BLE_ADV_INSTANCES));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_max_adv_data_len), MP_OBJ_NEW_SMALL_INT(MYNEWT_VAL(BLE_EXT_ADV_MAX_SIZE)));
@@ -44,6 +52,32 @@ static mp_obj_t bluetooth_ble5_set_phy(size_t n_args, const mp_obj_t *pos_args, 
     return bluetooth_handle_errno(esp32_ble5_set_phy(handle, args[ARG_tx_phys].u_int, args[ARG_rx_phys].u_int, args[ARG_coded].u_int));
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(bluetooth_ble5_set_phy_obj, 1, bluetooth_ble5_set_phy);
+
+static mp_obj_t bluetooth_ble5_set_tx_power(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_power_type, ARG_handle, ARG_power_level };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_power_type, MP_ARG_INT | MP_ARG_REQUIRED, {.u_int = 0} },
+        { MP_QSTR_handle, MP_ARG_INT | MP_ARG_REQUIRED, {.u_int = 0} },
+        { MP_QSTR_power_level, MP_ARG_INT | MP_ARG_REQUIRED, {.u_int = 0} },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+    mp_int_t power_type = args[ARG_power_type].u_int;
+    mp_int_t handle = args[ARG_handle].u_int;
+    mp_int_t power_level = args[ARG_power_level].u_int;
+    if (power_type < ESP_BLE_ENHANCED_PWR_TYPE_DEFAULT || power_type >= ESP_BLE_ENHANCED_PWR_TYPE_MAX
+        || handle < 0 || handle > UINT16_MAX
+        || power_level < ESP32_BLE5_TX_POWER_MIN || power_level > ESP_PWR_LVL_P20
+        || (power_type != ESP_BLE_ENHANCED_PWR_TYPE_ADV && power_type != ESP_BLE_ENHANCED_PWR_TYPE_CONN && handle != 0)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid TX power arguments"));
+    }
+    if (!mp_bluetooth_is_active()) {
+        mp_raise_OSError(MP_ENODEV);
+    }
+    check_esp_err(esp_ble_tx_power_set_enhanced((esp_ble_enhanced_power_type_t)power_type, (uint16_t)handle, (esp_power_level_t)power_level));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(bluetooth_ble5_set_tx_power_obj, 1, bluetooth_ble5_set_tx_power);
 
 #if MICROPY_ESP32_BLE5_EXT_ADV
 static mp_obj_t bluetooth_ble5_advertise(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -211,6 +245,7 @@ static MP_DEFINE_CONST_FUN_OBJ_2(bluetooth_ble5_periodic_sync_stop_obj, bluetoot
     { MP_ROM_QSTR(MP_QSTR_ble5_features), MP_ROM_PTR(&bluetooth_ble5_features_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_phy), MP_ROM_PTR(&bluetooth_ble5_phy_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_set_phy), MP_ROM_PTR(&bluetooth_ble5_set_phy_obj) },
+    { MP_ROM_QSTR(MP_QSTR_gap_set_tx_power), MP_ROM_PTR(&bluetooth_ble5_set_tx_power_obj) },
     #if MICROPY_ESP32_BLE5_EXT_ADV
     { MP_ROM_QSTR(MP_QSTR_gap_advertise_ext), MP_ROM_PTR(&bluetooth_ble5_advertise_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_advertise_ext_stop), MP_ROM_PTR(&bluetooth_ble5_advertise_stop_obj) },
@@ -232,6 +267,29 @@ static MP_DEFINE_CONST_FUN_OBJ_2(bluetooth_ble5_periodic_sync_stop_obj, bluetoot
     { MP_ROM_QSTR(MP_QSTR_PHY_1M_MASK), MP_ROM_INT(1) },
     { MP_ROM_QSTR(MP_QSTR_PHY_2M_MASK), MP_ROM_INT(2) },
     { MP_ROM_QSTR(MP_QSTR_PHY_CODED_MASK), MP_ROM_INT(4) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_TYPE_DEFAULT), MP_ROM_INT(ESP_BLE_ENHANCED_PWR_TYPE_DEFAULT) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_TYPE_ADV), MP_ROM_INT(ESP_BLE_ENHANCED_PWR_TYPE_ADV) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_TYPE_SCAN), MP_ROM_INT(ESP_BLE_ENHANCED_PWR_TYPE_SCAN) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_TYPE_INIT), MP_ROM_INT(ESP_BLE_ENHANCED_PWR_TYPE_INIT) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_TYPE_CONN), MP_ROM_INT(ESP_BLE_ENHANCED_PWR_TYPE_CONN) },
+    #if !CONFIG_IDF_TARGET_ESP32C6
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N24), MP_ROM_INT(ESP_PWR_LVL_N24) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N21), MP_ROM_INT(ESP_PWR_LVL_N21) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N18), MP_ROM_INT(ESP_PWR_LVL_N18) },
+    #endif
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N15), MP_ROM_INT(ESP_PWR_LVL_N15) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N12), MP_ROM_INT(ESP_PWR_LVL_N12) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N9), MP_ROM_INT(ESP_PWR_LVL_N9) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N6), MP_ROM_INT(ESP_PWR_LVL_N6) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N3), MP_ROM_INT(ESP_PWR_LVL_N3) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_N0), MP_ROM_INT(ESP_PWR_LVL_N0) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P3), MP_ROM_INT(ESP_PWR_LVL_P3) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P6), MP_ROM_INT(ESP_PWR_LVL_P6) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P9), MP_ROM_INT(ESP_PWR_LVL_P9) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P12), MP_ROM_INT(ESP_PWR_LVL_P12) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P15), MP_ROM_INT(ESP_PWR_LVL_P15) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P18), MP_ROM_INT(ESP_PWR_LVL_P18) },
+    { MP_ROM_QSTR(MP_QSTR_TX_POWER_P20), MP_ROM_INT(ESP_PWR_LVL_P20) },
     { MP_ROM_QSTR(MP_QSTR_IRQ_PHY_UPDATE), MP_ROM_INT(ESP32_BLE5_IRQ_PHY_UPDATE) },
     #if MICROPY_ESP32_BLE5_EXT_ADV
     { MP_ROM_QSTR(MP_QSTR_IRQ_SCAN_RESULT_EXT), MP_ROM_INT(ESP32_BLE5_IRQ_SCAN_RESULT) },

@@ -111,6 +111,8 @@ FRONTEND = """
 #define MP_OBJ_NULL ((void *)0)
 #define MP_OBJ_NEW_SMALL_INT(x) ((void *)(size_t)(x))
 #define MP_OBJ_NEW_QSTR(x) ((void *)(size_t)(x))
+#define MP_ROM_QSTR(x) (x)
+#define MP_ROM_INT(x) (x)
 #define MP_ROM_NONE ((void *)0)
 #define MP_ERROR_TEXT(x) (x)
 #define MP_ARG_OBJ 1
@@ -127,8 +129,11 @@ typedef struct {int unused;} mp_map_t;
 typedef struct {void *buf;size_t len;} mp_buffer_info_t;
 #define MP_BUFFER_READ 1
 mp_obj_t mp_const_none;
+mp_obj_t mp_const_true;
 int mp_obj_get_int(mp_obj_t);
 void mp_raise_ValueError(const char *);
+void mp_raise_OSError(int);
+void check_esp_err(esp_err_t);
 mp_obj_t bluetooth_handle_errno(int);
 mp_obj_t mp_obj_new_dict(size_t);
 void mp_obj_dict_store(mp_obj_t,mp_obj_t,mp_obj_t);
@@ -169,6 +174,28 @@ def structure(parser, text, name):
         ):
             return node.text.decode() + ";\n"
     raise ValueError("SDK structure missing: " + name)
+
+
+def power_declarations(parser, bt_header):
+    text = bt_header.read_text(encoding="utf-8")
+    declarations = []
+    for name in ("esp_ble_enhanced_power_type_t", "esp_power_level_t"):
+        matches = []
+        for node in walk(parser.parse(text.encode()).root_node):
+            declarator = node.child_by_field_name("declarator")
+            if (
+                node.type == "type_definition"
+                and declarator is not None
+                and declarator.text.decode() == name
+            ):
+                matches.append(node.text.decode())
+        if len(matches) != 1:
+            raise ValueError("SDK power enum missing or ambiguous: " + name)
+        declarations.extend(matches)
+    matches = re.findall(r"\besp_err_t\s+esp_ble_tx_power_set_enhanced\s*\([^;{}]*\)\s*;", text)
+    if len(matches) != 1:
+        raise ValueError("SDK enhanced TX power prototype missing or ambiguous")
+    return "\n".join(declarations + matches) + "\n"
 
 
 def function(parser, text, name):
@@ -253,16 +280,22 @@ def npl_declarations(parser, npl_header, port_header):
     return declarations
 
 
-def check(headers, hci_header, compiler, idf_version, npl_header=None, port_header=None):
+def check(
+    headers, hci_header, bt_header, compiler, idf_version, npl_header=None, port_header=None
+):
     parser = Parser(Language(tree_sitter_c.language()))
+    power = power_declarations(parser, bt_header)
     directory = Path(__file__).resolve().parent
     header = (directory / "bluetooth_ble5.h").read_text(encoding="utf-8")
     backend = (directory / "bluetooth_ble5_nimble.c").read_text(encoding="utf-8")
     port = (directory.parent / "mpnimbleport.c").read_text(encoding="utf-8")
-    frontend = (
-        (directory / "bluetooth_ble5_bindings.c")
-        .read_text(encoding="utf-8")
-        .split("// BEGIN METHODS")[0]
+    bindings = (directory / "bluetooth_ble5_bindings.c").read_text(encoding="utf-8")
+    frontend = bindings.split("// BEGIN METHODS")[0]
+    binding_constants = bindings.split("// BEGIN CONSTANTS")[1].split("// END CONSTANTS")[0]
+    frontend += (
+        "\nconst struct {int key; int value;} fake_constants[] = {\n"
+        + binding_constants
+        + "\n};\n"
     )
     events = (directory / "bluetooth_ble5_events.c").read_text(encoding="utf-8")
     gap = (headers / "ble_gap.h").read_text(encoding="utf-8")
@@ -324,6 +357,7 @@ def check(headers, hci_header, compiler, idf_version, npl_header=None, port_head
                 "SOC_BLE_50_SUPPORTED 1",
                 "CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT 1",
                 "CONFIG_IDF_TARGET_ESP32P4 0",
+                "CONFIG_IDF_TARGET_ESP32C6 " + str(int(bt_header.parents[1].name == "esp32c6")),
                 "MYNEWT_VAL_BLE_EXT_ADV " + str(extended),
                 "MYNEWT_VAL_BLE_PERIODIC_ADV " + str(periodic),
                 "MYNEWT_VAL_BLE_PERIODIC_ADV_ENH " + str(enhancements),
@@ -370,6 +404,7 @@ def check(headers, hci_header, compiler, idf_version, npl_header=None, port_head
                 prototypes.extend(found)
             prefix = (
                 COMMON
+                + power
                 + constants
                 + shapes
                 + npl
@@ -386,7 +421,8 @@ def check(headers, hci_header, compiler, idf_version, npl_header=None, port_head
                 ("port", port),
             ):
                 code = preprocess(prefix + source, definitions)
-                syntax = parser.parse(code.encode()).root_node
+                # tree-sitter does not accept #line directives inside initializers.
+                syntax = parser.parse(re.sub(r"(?m)^#line[^\n]*", "", code).encode()).root_node
                 errors = [node for node in walk(syntax) if node.type == "ERROR" or node.is_missing]
                 if errors:
                     raise ValueError(
@@ -415,6 +451,7 @@ if __name__ == "__main__":
     arguments = argparse.ArgumentParser(description=__doc__)
     arguments.add_argument("--headers", type=Path, action="append", required=True)
     arguments.add_argument("--hci-header", type=Path, required=True)
+    arguments.add_argument("--bt-header", type=Path, required=True)
     arguments.add_argument("--compiler", required=True)
     arguments.add_argument("--idf-version", required=True)
     arguments.add_argument("--npl-header", type=Path)
@@ -424,6 +461,7 @@ if __name__ == "__main__":
         check(
             headers,
             args.hci_header,
+            args.bt_header,
             args.compiler,
             args.idf_version,
             args.npl_header,

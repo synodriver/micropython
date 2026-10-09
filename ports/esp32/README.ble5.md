@@ -249,7 +249,9 @@ S2/S8 参数。设置异步生效，结果由 `IRQ_PHY_UPDATE` 上报。
 
 `gap_set_tx_power(power_type, handle, power_level)` 同步调用 ESP-IDF 的
 `esp_ble_tx_power_set_enhanced()`，成功返回 `None`，不产生新的 IRQ。
-`ble5_features()` 的 `tx_power=True` 表示提供此接口。
+`ble5_features()` 的 `tx_power_set=True` 表示提供此接口，`tx_power_get=True` 表示提供读取接口。
+设置能力字段由此前的 `tx_power` 更名为 `tx_power_set`，当前固件不保留旧键别名。
+检查能力可用 `.get("tx_power_set", False)` 和 `.get("tx_power_get", False)`；旧固件可能缺少新键。
 SDK 在 S3/C2/C3/C5/C6/H2 上提供该函数，S3 共用 C3 的头文件和控制器实现。
 它自身不要求开启扩展或周期广播；本项目将它放在现有 `MICROPY_ESP32_BLE5`
 条件内，仅在启用 BLE5 的原生控制器固件中暴露。原始 ESP32、S2、P4
@@ -295,6 +297,26 @@ BLE 未启用时，合法参数调用返回 `OSError(ENODEV)`；SDK 失败通过
 这个接口不修改广播载荷中的 TX Power AD 字段，也不会改变对端的发射功率。
 aioble 对应接口为 `aioble.set_tx_power()`，参数及常量同名，自动启用 BLE。
 连接对象的 `connection.set_tx_power(power_level)` 自动使用连接句柄并检查连接身份。
+
+`gap_get_tx_power(power_type, handle)` 同步调用 `esp_ble_tx_power_get_enhanced()`，
+与设置接口一起置于 `MICROPY_ESP32_BLE5` 编译路径，不依赖扩展/周期广播开关。
+参数类型、句柄范围和 DEFAULT/SCAN/INIT 的零句柄约束与设置接口相同；
+BLE 未启用时合法参数抛出 `OSError(ENODEV)`。
+返回当前 SDK 功率档位索引（0..15，C6 为 3..15），不是 dBm 或实测射频功率。
+SDK 返回 `ESP_PWR_LVL_INVALID`、负错误值或其他超出档位范围的值时返回 `None`；
+getter 的返回值不是 `esp_err_t`，不使用 `check_esp_err()`。
+
+```python
+if ble.ble5_features().get("tx_power_get", False):
+    level = ble.gap_get_tx_power(bluetooth.TX_POWER_TYPE_DEFAULT, 0)
+    if level is not None:
+        print("TX power level:", level)
+```
+
+读取前需 `ble.active(True)`。新能力字段 `tx_power_get=True` 与仅表示设置能力的
+`tx_power_set` 独立；旧固件可能没有该字段。aioble 提供自动启用 BLE 的同步方法
+`aioble.get_tx_power(power_type, handle)` 和检查连接身份的 `connection.get_tx_power()`；
+缺少底层方法时抛出 `NotImplementedError`，不需要 `await`。
 
 `gap_advertise_ext(interval_us, adv_data=None, *, resp_data=None, instance=1,
 connectable=True, scannable=False, primary_phy=1, secondary_phy=1, sid=0,
@@ -379,7 +401,7 @@ Bluetooth 绑定风格的 `OSError`。广播完成仅在 reason=0 时有有效�
 复查 SDK 接口：`ble5/check_sdk.py --headers <NimBLE host 头文件目录>
 --hci-header <nimble/hci_common.h> --bt-header <目标芯片的 esp_bt.h>
 --compiler <C 编译器> --idf-version <版本>`。
-`--bt-header` 用于读取真实的增强功率类型、档位枚举和 setter 原型；S3 使用 C3 的头文件。
+`--bt-header` 用于读取真实的增强功率类型、档位枚举和 setter/getter 原型；S3 使用 C3 的头文件。
 版本须与对应 SDK 头文件匹配。可重复提供
 `--headers`，脚本依赖 `pcpp`、`tree-sitter`、`tree-sitter-c`。
 检查使用 MSVC `/Zs` 或 GCC/Clang `-fsyntax-only`，不生成目标文件。
@@ -388,9 +410,12 @@ Bluetooth 绑定风格的 `OSError`。广播完成仅在 reason=0 时有有效�
 完成 **90 项** C 语法/类型检查（每套 18 项，S3 共用 C3 头文件），并核对
 aioble 常量与 SDK 枚举一致；未把这些检查当作固件编译或链接证据。
 aioble 宿主回归 **115 项通过**，绑定生成器 **5 项通过**。
+以上为 setter 实现记录。新增 getter 后，aioble 宿主回归为 **120 项通过**，生成器仍为
+**5 项通过**；IDF v6.1 五套芯片头文件 **90 项**静态类型检查通过，另核对 IDF v5.5～v6.1
+九个版本共 45 组功率枚举及 setter/getter 声明。详情和验证边界见根目录审计报告第三十六节。
 新增的实机参数测试 `tests/ports/esp32/bluetooth_tx_power.py` 检查类型、范围、
-整数溢出、C6 档位和未启用 BLE 时的错误；不启动控制器或发射无线信号。
-本轮仅通过其 MicroPython 字节码语法检查，未在固件上执行。烧录后可运行：
+整数溢出、C6 档位和未启用 BLE 时的错误，并已补充 getter 的相应边界；不启动控制器或发射无线信号。
+setter 原测试曾通过 MicroPython 字节码语法检查；getter 本轮未重跑 mpy-cross，未在固件上执行。烧录后可运行：
 
 ```powershell
 & D:\conda\envs\hass\python.exe tools/pyboard.py --device COM3 tests/ports/esp32/bluetooth_tx_power.py

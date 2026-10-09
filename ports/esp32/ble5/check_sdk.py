@@ -192,10 +192,15 @@ def power_declarations(parser, bt_header):
         if len(matches) != 1:
             raise ValueError("SDK power enum missing or ambiguous: " + name)
         declarations.extend(matches)
-    matches = re.findall(r"\besp_err_t\s+esp_ble_tx_power_set_enhanced\s*\([^;{}]*\)\s*;", text)
-    if len(matches) != 1:
-        raise ValueError("SDK enhanced TX power prototype missing or ambiguous")
-    return "\n".join(declarations + matches) + "\n"
+    for pattern, name in (
+        (r"\besp_err_t\s+esp_ble_tx_power_set_enhanced\s*\([^;{}]*\)\s*;", "setter"),
+        (r"\besp_power_level_t\s+esp_ble_tx_power_get_enhanced\s*\([^;{}]*\)\s*;", "getter"),
+    ):
+        matches = re.findall(pattern, text)
+        if len(matches) != 1:
+            raise ValueError("SDK enhanced TX power " + name + " prototype missing or ambiguous")
+        declarations.extend(matches)
+    return "\n".join(declarations) + "\n"
 
 
 def function(parser, text, name):

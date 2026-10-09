@@ -5,6 +5,7 @@ try:
 
     ble = bluetooth.BLE()
     set_power = ble.gap_set_tx_power
+    get_power = ble.gap_get_tx_power
 except (ImportError, AttributeError):
     print("SKIP")
     raise SystemExit
@@ -71,3 +72,40 @@ try:
 except OSError as error:
     assert error.args[0] == errno.ENODEV
 print("inactive controller OK")
+
+for args in ((-1, 0), (5, 0), (65536, 0), (0, -1), (1, 65536), (0, 1), (2, 1), (3, 1)):
+    try:
+        get_power(*args)
+        assert False
+    except ValueError:
+        pass
+print("getter range validation OK")
+
+for args in ((None, 0), (0, None), ("0", 0), (0, "0")):
+    try:
+        get_power(*args)
+        assert False
+    except TypeError:
+        pass
+print("getter type validation OK")
+
+for args in ((1 << 64, 0), (0, 1 << 64)):
+    try:
+        get_power(*args)
+        assert False
+    except OverflowError:
+        pass
+print("getter integer overflow OK")
+
+for args in ((0, 0), (1, 0), (1, 65535), (2, 0), (3, 0), (4, 0), (4, 65535)):
+    try:
+        get_power(*args)
+        assert False
+    except OSError as error:
+        assert error.args[0] == errno.ENODEV
+try:
+    get_power(power_type=0, handle=0)
+    assert False
+except OSError as error:
+    assert error.args[0] == errno.ENODEV
+print("getter inactive controller OK")

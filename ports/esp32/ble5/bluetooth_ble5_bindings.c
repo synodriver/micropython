@@ -21,7 +21,8 @@ static mp_obj_t bluetooth_ble5_features(mp_obj_t self_in) {
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_phys), MP_OBJ_NEW_SMALL_INT(esp32_ble5_phy_mask()));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_extended_advertising), mp_obj_new_bool(MICROPY_ESP32_BLE5_EXT_ADV));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_periodic_advertising), mp_obj_new_bool(MICROPY_ESP32_BLE5_PERIODIC_ADV));
-    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power), mp_const_true);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power_set), mp_const_true);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power_get), mp_const_true);
     #if MICROPY_ESP32_BLE5_EXT_ADV
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_advertising_instances), MP_OBJ_NEW_SMALL_INT(BLE_ADV_INSTANCES));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_max_adv_data_len), MP_OBJ_NEW_SMALL_INT(MYNEWT_VAL(BLE_EXT_ADV_MAX_SIZE)));
@@ -78,6 +79,36 @@ static mp_obj_t bluetooth_ble5_set_tx_power(size_t n_args, const mp_obj_t *pos_a
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_KW(bluetooth_ble5_set_tx_power_obj, 1, bluetooth_ble5_set_tx_power);
+
+static mp_obj_t bluetooth_ble5_get_tx_power(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_power_type, ARG_handle };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_power_type, MP_ARG_INT | MP_ARG_REQUIRED, {.u_int = 0} },
+        { MP_QSTR_handle, MP_ARG_INT | MP_ARG_REQUIRED, {.u_int = 0} },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+    mp_int_t power_type = args[ARG_power_type].u_int;
+    mp_int_t handle = args[ARG_handle].u_int;
+    if (power_type < ESP_BLE_ENHANCED_PWR_TYPE_DEFAULT || power_type >= ESP_BLE_ENHANCED_PWR_TYPE_MAX
+        || handle < 0 || handle > UINT16_MAX
+        || (power_type != ESP_BLE_ENHANCED_PWR_TYPE_ADV && power_type != ESP_BLE_ENHANCED_PWR_TYPE_CONN && handle != 0)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid TX power arguments"));
+    }
+    if (!mp_bluetooth_is_active()) {
+        mp_raise_OSError(MP_ENODEV);
+    }
+    esp_power_level_t power_level = esp_ble_tx_power_get_enhanced(
+        (esp_ble_enhanced_power_type_t)power_type, (uint16_t)handle
+    );
+    // Some controllers return a negative error cast to esp_power_level_t.
+    // An unsigned range check rejects them regardless of enum signedness.
+    if ((unsigned int)power_level - ESP32_BLE5_TX_POWER_MIN > ESP_PWR_LVL_P20 - ESP32_BLE5_TX_POWER_MIN) {
+        return mp_const_none;
+    }
+    return MP_OBJ_NEW_SMALL_INT(power_level);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(bluetooth_ble5_get_tx_power_obj, 1, bluetooth_ble5_get_tx_power);
 
 #if MICROPY_ESP32_BLE5_EXT_ADV
 static mp_obj_t bluetooth_ble5_advertise(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -246,6 +277,7 @@ static MP_DEFINE_CONST_FUN_OBJ_2(bluetooth_ble5_periodic_sync_stop_obj, bluetoot
     { MP_ROM_QSTR(MP_QSTR_gap_phy), MP_ROM_PTR(&bluetooth_ble5_phy_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_set_phy), MP_ROM_PTR(&bluetooth_ble5_set_phy_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_set_tx_power), MP_ROM_PTR(&bluetooth_ble5_set_tx_power_obj) },
+    { MP_ROM_QSTR(MP_QSTR_gap_get_tx_power), MP_ROM_PTR(&bluetooth_ble5_get_tx_power_obj) },
     #if MICROPY_ESP32_BLE5_EXT_ADV
     { MP_ROM_QSTR(MP_QSTR_gap_advertise_ext), MP_ROM_PTR(&bluetooth_ble5_advertise_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_advertise_ext_stop), MP_ROM_PTR(&bluetooth_ble5_advertise_stop_obj) },

@@ -50,10 +50,26 @@ elseif (NOT MICROPY_FROZEN_MANIFEST)
     set(MICROPY_FROZEN_MANIFEST ${CMAKE_CURRENT_LIST_DIR}/boards/manifest.py)
 endif()
 
-# Enable BLE 5 only on targets with a native BLE 5 controller.  In particular,
+# Automatic light sleep is configured by sdkconfig.base for every ESP32 target;
+# it does not depend on the BLE 5 feature set below.
+
+# Enable BLE 5 only on targets with a native BLE 5 controller. In particular,
 # ESP32-P4's optional remote controller must keep its existing configuration.
 if(IDF_TARGET MATCHES "^(esp32s3|esp32c2|esp32c3|esp32c5|esp32c6|esp32h2)$")
     list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble5)
+endif()
+
+# BLE controller sleep tuning is separate from BLE 5. It is only selected for
+# controllers whose Kconfig provides these options. CPU automatic light sleep
+# remains available on classic ESP32 and other targets through sdkconfig.base.
+if(IDF_TARGET STREQUAL "esp32s3" OR IDF_TARGET STREQUAL "esp32c3")
+    list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep_c3)
+elseif(IDF_TARGET STREQUAL "esp32c2" OR IDF_TARGET STREQUAL "esp32c5" OR IDF_TARGET STREQUAL "esp32h2")
+    list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep)
+elseif(IDF_TARGET STREQUAL "esp32c6")
+    list(APPEND SDKCONFIG_DEFAULTS
+        ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep
+        ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep_c6)
 endif()
 
 # Concatenate all sdkconfig files into a combined one for the IDF to use.

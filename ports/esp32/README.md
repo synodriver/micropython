@@ -21,6 +21,11 @@ Supported features include:
 - The network module with WLAN (WiFi) support.
 - Bluetooth low-energy (BLE) support via the bluetooth module.
 
+Automatic light sleep can be enabled explicitly with `machine.freq(hz, True)`.
+The optional second argument defaults to `False`, preserving existing calls.
+See [README.lightsleep.md](README.lightsleep.md) for configuration, waiting
+behaviour and BLE/console compatibility.
+
 Initial development of this ESP32 port was sponsored in part by Microbric Pty Ltd.
 
 Choosing a suitable chip

@@ -5,6 +5,8 @@ CONFIG_BT_CONTROLLER_ENABLED=y
 
 CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="MPY ESP32"
 
+# Fallback for custom boards. Native targets select a sdkconfig.ble_max_* file
+# after this one to match the host and controller limits.
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=4
 
 # Put NimBLE on core 1, and for synchronisation

@@ -187,6 +187,9 @@ soft_reset:
 
 soft_reset_exit:
 
+    // Stop automatic sleep before tearing down drivers and their wakeup sources.
+    machine_disable_auto_lightsleep();
+
     #if MICROPY_BLUETOOTH_NIMBLE
     mp_bluetooth_deinit();
     #endif

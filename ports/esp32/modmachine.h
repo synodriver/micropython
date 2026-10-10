@@ -14,6 +14,8 @@ extern const mp_obj_type_t machine_dac_type;
 
 void machine_init(void);
 void machine_deinit(void);
+bool machine_auto_lightsleep_enabled(void);
+void machine_disable_auto_lightsleep(void);
 void machine_pins_init(void);
 void machine_pins_deinit(void);
 void machine_pwm_deinit_all(void);

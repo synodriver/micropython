@@ -1,0 +1,3 @@
+# Classic ESP32: host and controller both support up to nine connections.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=9
+CONFIG_BTDM_CTRL_BLE_MAX_CONN=9

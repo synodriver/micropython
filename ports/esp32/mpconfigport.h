@@ -122,6 +122,7 @@
 #define MICROPY_PY_OS_URANDOM               (1)
 #define MICROPY_PY_MACHINE                  (1)
 #define MICROPY_PY_MACHINE_INCLUDEFILE      "ports/esp32/modmachine.c"
+#define MICROPY_PY_MACHINE_FREQ_NUM_ARGS_MAX (2)
 #define MICROPY_PY_MACHINE_RESET            (1)
 #define MICROPY_PY_MACHINE_BARE_METAL_FUNCS (1)
 #define MICROPY_PY_MACHINE_DISABLE_IRQ_ENABLE_IRQ (1)
@@ -270,6 +271,8 @@
 #define MICROPY_HW_ENABLE_USB_RUNTIME_DEVICE    (1) // Support machine.USBDevice
 #endif
 
+#define MICROPY_WRAP_TUD_EVENT_HOOK_CB(name) esp32_ ## name
+
 #ifndef MICROPY_HW_USB_PID
 #define _PID_MAP(itf, n) ((CFG_TUD_##itf) << (n))
 // A combination of interfaces must have a unique product id, since PC will save device driver after the first plug.
@@ -335,28 +338,14 @@ void *esp_native_code_commit(void *, size_t, void *);
 #define MICROPY_PY_SOCKET_EVENTS_HANDLER
 #endif
 
-#if MICROPY_PY_THREAD
-#define MICROPY_EVENT_POLL_HOOK \
-    do { \
-        mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS); \
-        MICROPY_PY_SOCKET_EVENTS_HANDLER \
-        MP_THREAD_GIL_EXIT(); \
-        ulTaskNotifyTake(pdFALSE, 1); \
-        MP_THREAD_GIL_ENTER(); \
-    } while (0);
-#else
 #if CONFIG_IDF_TARGET_ARCH_RISCV
 #define MICROPY_PY_WAIT_FOR_INTERRUPT asm volatile ("wfi\n")
 #else
 #define MICROPY_PY_WAIT_FOR_INTERRUPT asm volatile ("waiti 0\n")
 #endif
-#define MICROPY_EVENT_POLL_HOOK \
-    do { \
-        mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS); \
-        MICROPY_PY_SOCKET_EVENTS_HANDLER \
-            MICROPY_PY_WAIT_FOR_INTERRUPT; \
-    } while (0);
-#endif
+// Use the timeout-aware scheduler hook; the legacy poll hook ignores timeouts.
+// These hooks only extend waits/notify the task when automatic sleep is enabled.
+#define MICROPY_SCHED_HOOK_SCHEDULED mp_hal_wake_main_task_if_suspended()
 
 // Functions that should go in IRAM
 // For ESP32 with SPIRAM workaround, firmware is larger and uses more static IRAM,

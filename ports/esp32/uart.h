@@ -35,6 +35,8 @@
 
 #if MICROPY_HW_ENABLE_UART_REPL
 
+#include "esp_err.h"
+
 #ifndef MICROPY_HW_UART_REPL
 #define MICROPY_HW_UART_REPL (0)
 #endif
@@ -44,6 +46,7 @@
 #endif
 
 void uart_stdout_init(void);
+esp_err_t uart_stdout_set_wakeup(bool enable);
 int uart_stdout_tx_strn(const char *str, size_t len);
 
 #endif // MICROPY_HW_ENABLE_UART_REPL

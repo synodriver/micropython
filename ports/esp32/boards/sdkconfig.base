@@ -39,8 +39,11 @@ CONFIG_XTAL_FREQ_AUTO=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 
-# Power Management
+# Power Management. These options are independent of BLE/BLE 5; they enable
+# the ESP-IDF automatic light-sleep mechanism used by machine.freq(hz, True).
 CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_ESP_TIMER_IN_IRAM=y
 
 # Memory protection
 # This is required to allow allocating IRAM

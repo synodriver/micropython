@@ -38,6 +38,26 @@
 
 static usb_phy_handle_t phy_hdl;
 
+static DRAM_ATTR volatile bool usb_bus_active;
+
+bool IRAM_ATTR usb_device_active(void) {
+    return usb_bus_active;
+}
+
+// Wrap the shared event hook so PM sees bus activity immediately, even while
+// the VM is blocked in a socket or another driver and cannot run tud_task().
+TU_ATTR_FAST_FUNC void esp32_tud_event_hook_cb(uint8_t rhport, uint32_t eventid, bool in_isr);
+
+TU_ATTR_FAST_FUNC void tud_event_hook_cb(uint8_t rhport, uint32_t eventid, bool in_isr) {
+    if (eventid == DCD_EVENT_UNPLUGGED) {
+        usb_bus_active = false;
+    } else if (eventid == DCD_EVENT_BUS_RESET || eventid == DCD_EVENT_SETUP_RECEIVED || eventid == DCD_EVENT_RESUME) {
+        usb_bus_active = true;
+    }
+    // A suspended host is still connected: keep protecting it until unplug.
+    esp32_tud_event_hook_cb(rhport, eventid, in_isr);
+}
+
 void usb_phy_init(void) {
     // ref: https://github.com/espressif/esp-usb/blob/4b6a798d0bed444fff48147c8dcdbbd038e92892/device/esp_tinyusb/tinyusb.c
 

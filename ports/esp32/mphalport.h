@@ -108,6 +108,10 @@ uint32_t mp_hal_get_cpu_freq(void);
 // Wake up the main task if it is sleeping
 void mp_hal_wake_main_task(void);
 void mp_hal_wake_main_task_from_isr(void);
+void mp_hal_wake_main_task_if_suspended(void);
+void mp_hal_wait_ms(mp_uint_t timeout_ms);
+esp_err_t mp_hal_prepare_auto_lightsleep(void);
+#define MICROPY_INTERNAL_WFE(timeout_ms) mp_hal_wait_ms((mp_uint_t)(timeout_ms))
 
 // C-level pin HAL
 #include "py/obj.h"

@@ -67,9 +67,22 @@ static void usb_serial_jtag_handle_rx(void) {
     }
 }
 
+static DRAM_ATTR volatile uint32_t last_sof_us;
+
+bool IRAM_ATTR usb_serial_jtag_connected(void) {
+    // SOF arrives every millisecond while a host is active. This accessor is
+    // also called by PM with cache disabled; avoid FreeRTOS locks and TinyUSB.
+    // Unsigned subtraction handles the 32-bit microsecond clock wrapping.
+    return (uint32_t)((uint32_t)esp_timer_get_time() - last_sof_us) < 100000;
+}
+
 static void usb_serial_jtag_isr_handler(void *arg) {
     uint32_t flags = usb_serial_jtag_ll_get_intsts_mask();
     usb_serial_jtag_ll_clr_intsts_mask(flags);
+
+    if (flags & USB_SERIAL_JTAG_INTR_SOF) {
+        last_sof_us = (uint32_t)esp_timer_get_time();
+    }
 
     if (flags & USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT) {
         usb_serial_jtag_handle_rx();
@@ -90,6 +103,8 @@ static void usb_serial_jtag_isr_handler(void *arg) {
 }
 
 void usb_serial_jtag_init(void) {
+    // Conservatively protect enumeration until the first SOF (or timeout).
+    last_sof_us = (uint32_t)esp_timer_get_time();
     // Note: Don't clear the SERIAL_IN_EMPTY interrupt, as it's possible the
     // bootloader wrote enough data to the host that we need the interrupt to flush it.
     usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT |

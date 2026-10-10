@@ -39,6 +39,7 @@
 #include "py/objtuple.h"
 #include "modmachine.h"
 #include "machine_rtc.h"
+#include "uart.h"
 
 #if SOC_TOUCH_SENSOR_SUPPORTED
 #define MICROPY_PY_MACHINE_TOUCH_PAD_ENTRY { MP_ROM_QSTR(MP_QSTR_TouchPad), MP_ROM_PTR(&machine_touchpad_type) },
@@ -84,6 +85,11 @@ typedef enum {
 } reset_reason_t;
 
 static bool is_soft_reset = 0;
+static volatile bool auto_lightsleep_enabled = false;
+
+bool machine_auto_lightsleep_enabled(void) {
+    return auto_lightsleep_enabled;
+}
 
 // Note: this is from a private IDF header
 extern int esp_clk_cpu_freq(void);
@@ -94,23 +100,32 @@ static mp_obj_t mp_machine_get_freq(void) {
 
 static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
     mp_int_t freq = mp_obj_get_int(args[0]) / 1000000;
+    // A one-argument call retains the original fixed-frequency, no-sleep mode.
+    bool light_sleep_enable = n_args > 1 && mp_obj_is_true(args[1]);
     #if CONFIG_IDF_TARGET_ESP32C2
     if (freq != 80 && freq != 120) {
         mp_raise_ValueError(MP_ERROR_TEXT("frequency must be 80MHz or 120MHz"));
     }
+    #elif CONFIG_IDF_TARGET_ESP32H2
+    if (freq != 16 && freq != 32 && freq != 48 && freq != 64 && freq != 96) {
+        mp_raise_ValueError(MP_ERROR_TEXT("frequency must be 16MHz, 32MHz, 48MHz, 64MHz or 96MHz"));
+    }
+    #elif CONFIG_IDF_TARGET_ESP32P4
+    // The supported PLL frequencies depend on the IDF version and chip revision.
+    // Let esp_pm_configure validate this union against the actual SDK/target.
+    if (freq != 20 && freq != 40 && freq != 90 && freq != 100
+        && freq != 180 && freq != 200 && freq != 360 && freq != 400) {
+        mp_raise_ValueError(MP_ERROR_TEXT("unsupported P4 frequency"));
+    }
     #else
     if (freq != 20 && freq != 40 && freq != 80
-        #if !(CONFIG_IDF_TARGET_ESP32H2)
         && freq != 160
-        #endif
-        #if !(CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32H2)
+        #if !(CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6)
         && freq != 240
         #endif
         ) {
         #if CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6
         mp_raise_ValueError(MP_ERROR_TEXT("frequency must be 20MHz, 40MHz, 80Mhz or 160MHz"));
-        #elif CONFIG_IDF_TARGET_ESP32H2
-        mp_raise_ValueError(MP_ERROR_TEXT("frequency must be 20MHz, 40MHz or 80Mhz"));
         #else
         mp_raise_ValueError(MP_ERROR_TEXT("frequency must be 20MHz, 40MHz, 80Mhz, 160MHz or 240MHz"));
         #endif
@@ -119,18 +134,48 @@ static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
     esp_pm_config_t pm = {
         .max_freq_mhz = freq,
         .min_freq_mhz = freq,
-        .light_sleep_enable = false,
+        .light_sleep_enable = light_sleep_enable,
     };
+    if (light_sleep_enable) {
+        check_esp_err(mp_hal_prepare_auto_lightsleep());
+    }
+    #if MICROPY_HW_ENABLE_UART_REPL
+    if (light_sleep_enable && !auto_lightsleep_enabled) {
+        check_esp_err(uart_stdout_set_wakeup(true));
+    }
+    #endif
     esp_err_t ret = esp_pm_configure(&pm);
     if (ret != ESP_OK) {
+        #if MICROPY_HW_ENABLE_UART_REPL
+        if (light_sleep_enable && !auto_lightsleep_enabled) {
+            uart_stdout_set_wakeup(false);
+        }
+        #endif
+        if (light_sleep_enable && ret == ESP_ERR_NOT_SUPPORTED) {
+            mp_raise_ValueError(MP_ERROR_TEXT("automatic light sleep requires PM and tickless idle"));
+        }
         mp_raise_ValueError(NULL);
     }
+    bool was_enabled = auto_lightsleep_enabled;
+    auto_lightsleep_enabled = light_sleep_enable;
+    #if MICROPY_HW_ENABLE_UART_REPL
+    if (!light_sleep_enable && was_enabled) {
+        check_esp_err(uart_stdout_set_wakeup(false));
+    }
+    #else
+    (void)was_enabled;
+    #endif
     while (esp_rom_get_cpu_ticks_per_us() != freq) {
         vTaskDelay(1);
     }
 }
 
 static void machine_sleep_helper(wake_type_t wake_type, size_t n_args, const mp_obj_t *args) {
+    // Manual sleep clears driver-owned wakeup sources. Require an explicit
+    // change of mode before doing so, including for deep sleep.
+    if (auto_lightsleep_enabled) {
+        mp_raise_ValueError(MP_ERROR_TEXT("disable automatic light sleep before manual sleep"));
+    }
     #if !SOC_DEEP_SLEEP_SUPPORTED
     if (MACHINE_WAKE_DEEPSLEEP == wake_type) {
         mp_raise_ValueError(MP_ERROR_TEXT("DEEPSLEEP not supported on this chip"));
@@ -301,8 +346,22 @@ void machine_init(void) {
 }
 
 void machine_deinit(void) {
+    machine_disable_auto_lightsleep();
     // we are doing a soft-reset so change the reset_cause
     is_soft_reset = 1;
+}
+
+void machine_disable_auto_lightsleep(void) {
+    if (auto_lightsleep_enabled) {
+        esp_pm_config_t pm;
+        ESP_ERROR_CHECK(esp_pm_get_configuration(&pm));
+        pm.light_sleep_enable = false;
+        ESP_ERROR_CHECK(esp_pm_configure(&pm));
+        #if MICROPY_HW_ENABLE_UART_REPL
+        ESP_ERROR_CHECK(uart_stdout_set_wakeup(false));
+        #endif
+        auto_lightsleep_enabled = false;
+    }
 }
 
 static mp_obj_t machine_wake_reason(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -352,6 +411,10 @@ static mp_obj_t mp_machine_unique_id(void) {
 }
 
 static void mp_machine_idle(void) {
+    if (auto_lightsleep_enabled) {
+        mp_event_wait_ms(100);
+        return;
+    }
     MP_THREAD_GIL_EXIT();
     taskYIELD();
     MP_THREAD_GIL_ENTER();

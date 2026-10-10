@@ -47,6 +47,11 @@
 #include "usb.h"
 #include "usb_serial_jtag.h"
 #include "uart.h"
+#include "modmachine.h"
+
+#if CONFIG_PM_ENABLE && CONFIG_FREERTOS_USE_TICKLESS_IDLE
+#include "esp_private/pm_impl.h"
+#endif
 
 #if MICROPY_PY_STRING_TX_GIL_THRESHOLD < 0
 #error "MICROPY_PY_STRING_TX_GIL_THRESHOLD must be positive"
@@ -144,7 +149,8 @@ int mp_hal_stdin_rx_chr(void) {
             return dupterm_c;
         }
         #endif
-        MICROPY_EVENT_POLL_HOOK
+        // Keep polling REPL input every tick, even in automatic sleep mode.
+        mp_event_wait_ms(1);
     }
 }
 
@@ -194,6 +200,84 @@ mp_uint_t mp_hal_ticks_ms(void) {
     return esp_timer_get_time() / 1000;
 }
 
+// Called with interrupts/cache potentially disabled by the IDF PM code.
+// Both accessors only read DRAM state and, for USJ, the IRAM esp_timer clock.
+static bool IRAM_ATTR mp_hal_usb_active(void) {
+    #if MICROPY_HW_ENABLE_USBDEV
+    if (usb_device_active()) {
+        return true;
+    }
+    #endif
+    #if MICROPY_HW_ESP_USB_SERIAL_JTAG
+    if (usb_serial_jtag_connected()) {
+        return true;
+    }
+    #endif
+    return false;
+}
+
+esp_err_t mp_hal_prepare_auto_lightsleep(void) {
+    #if CONFIG_PM_ENABLE && CONFIG_FREERTOS_USE_TICKLESS_IDLE && (MICROPY_HW_ENABLE_USBDEV || MICROPY_HW_ESP_USB_SERIAL_JTAG)
+    #if MICROPY_HW_ESP_USB_SERIAL_JTAG && !CONFIG_ESP_TIMER_IN_IRAM
+    // The global USJ guard reads esp_timer_get_time with cache disabled.
+    return ESP_ERR_NOT_SUPPORTED;
+    #else
+    // One callback for the lifetime of the port, including across soft resets.
+    // Register before enabling PM so allocation failure leaves sleep disabled.
+    static bool registered;
+    if (!registered) {
+        esp_err_t ret = esp_pm_register_skip_light_sleep_callback(mp_hal_usb_active);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        registered = true;
+    }
+    #endif
+    #endif
+    return ESP_OK;
+}
+
+// Limit polling latency for streams which do not notify the main task (eg
+// sockets). A one-tick wait remains the default when automatic sleep is off.
+static TickType_t mp_hal_wait_ticks(mp_uint_t timeout_ms) {
+    if (!machine_auto_lightsleep_enabled()) {
+        return 1;
+    }
+    if (timeout_ms == 0 || MP_STATE_VM(sched_state) == MP_SCHED_PENDING) {
+        return 0;
+    }
+    if (mp_hal_usb_active()) {
+        return 1;
+    }
+    #if MICROPY_PY_SOCKET_EVENTS
+    extern bool socket_events_active(void);
+    if (socket_events_active()) {
+        return 1;
+    }
+    #endif
+    return MAX(1, MIN(timeout_ms, 100) / portTICK_PERIOD_MS);
+}
+
+void mp_hal_wait_ms(mp_uint_t timeout_ms) {
+    MICROPY_PY_SOCKET_EVENTS_HANDLER
+    #if !MICROPY_PY_THREAD
+    if (!machine_auto_lightsleep_enabled()) {
+        MICROPY_PY_WAIT_FOR_INTERRUPT;
+        return;
+    }
+    #endif
+    TickType_t ticks = mp_hal_wait_ticks(timeout_ms);
+    MP_THREAD_GIL_EXIT();
+    ulTaskNotifyTake(pdFALSE, ticks);
+    MP_THREAD_GIL_ENTER();
+    if (machine_auto_lightsleep_enabled()) {
+        // Complete the callback which woke us before poll rechecks its streams.
+        // Otherwise poll can miss the ready flag, run the callback, then sleep
+        // again after its only notification has already been consumed.
+        mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS);
+    }
+}
+
 void mp_hal_delay_ms(mp_uint_t ms) {
     uint64_t us = (uint64_t)ms * 1000ULL;
     uint64_t dt;
@@ -212,7 +296,7 @@ void mp_hal_delay_ms(mp_uint_t ms) {
             dt = t1 - t0;
             break;
         } else {
-            ulTaskNotifyTake(pdFALSE, 1);
+            ulTaskNotifyTake(pdFALSE, mp_hal_wait_ticks((mp_uint_t)((us - dt) / 1000)));
             MP_THREAD_GIL_ENTER();
         }
     }
@@ -241,7 +325,7 @@ void mp_hal_delay_us(mp_uint_t us) {
         }
         if (dt + pend_overhead < us) {
             // we have enough time to service pending events
-            // (don't use MICROPY_EVENT_POLL_HOOK because it also yields)
+            // (don't use mp_event_wait_ms because it also yields)
             mp_handle_pending(MP_HANDLE_PENDING_CALLBACKS_AND_EXCEPTIONS);
         }
     }
@@ -266,6 +350,18 @@ void mp_hal_wake_main_task_from_isr(void) {
     vTaskNotifyGiveFromISR(mp_main_task_handle, &xHigherPriorityTaskWoken);
     if (xHigherPriorityTaskWoken == pdTRUE) {
         portYIELD_FROM_ISR();
+    }
+}
+
+// Scheduling can happen from a BLE host task or an ISR. Preserve the original
+// polling behaviour when automatic sleep is disabled.
+void mp_hal_wake_main_task_if_suspended(void) {
+    if (machine_auto_lightsleep_enabled() && mp_main_task_handle != NULL) {
+        if (xPortInIsrContext()) {
+            mp_hal_wake_main_task_from_isr();
+        } else {
+            mp_hal_wake_main_task();
+        }
     }
 }
 

@@ -1,0 +1,3 @@
+# ESP32-C6 needs MAC/BB power-down support for BLE light-sleep retention.
+# This option is not available on C2 or H2 and is only required on C6.
+CONFIG_ESP_PHY_MAC_BB_PD=y

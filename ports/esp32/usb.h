@@ -26,9 +26,12 @@
 #ifndef MICROPY_INCLUDED_ESP32_USB_H
 #define MICROPY_INCLUDED_ESP32_USB_H
 
+#include <stdbool.h>
+
 #define MICROPY_HW_USB_CDC_TX_TIMEOUT_MS (500)
 
 void usb_phy_init(void);
 void usb_usj_mode(void);
+bool usb_device_active(void);
 
 #endif // MICROPY_INCLUDED_ESP32_USB_H

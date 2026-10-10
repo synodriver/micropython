@@ -9,8 +9,8 @@
 ESP32-S3、C2、C3、C5、C6、H2 的构建增加 `boards/sdkconfig.ble5`，
 开启 2M/Coded PHY、扩展广播和周期广播。
 新增代码同时受 `SOC_BLE_50_SUPPORTED`、NimBLE 配置和 MicroPython
-蓝牙配置约束。原始 ESP32、S2、P4 的配置和蓝牙源码选择保持原样；
-P4 即使使用外部控制器，也不会进入此次适配。
+蓝牙配置约束。原始 ESP32、S2、P4 不启用这些 BLE5 接口；
+P4 即使使用外部控制器，也不会进入此次适配。原始 ESP32 的连接容量另见下表。
 
 已有构建目录的 `sdkconfig` 会优先于 SDK 默认值。首次测试请使用新构建目录，
 或者在已有配置中显式启用 `sdkconfig.ble5` 列出的选项。
@@ -18,6 +18,38 @@ P4 即使使用外部控制器，也不会进入此次适配。
 广播实例总数和配置的广播数据上限。实例总数包括预留的实例 0；SDK 选项
 `CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=2` 表示额外两个实例，总共三个。
 这些是固件配置能力；控制器仍会验证具体操作，连接 PHY 也需要对端支持。
+
+### BLE 连接容量
+
+原生蓝牙目标的 `mpconfigboard_*_common.cmake` 在 `sdkconfig.ble` 后选择
+`sdkconfig.ble_max_*`，将连接数默认值设置到已核对的 IDF 5.5～6.1 SDK 上限：
+
+| 目标 | `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` | 控制器配置 |
+| --- | --- | --- |
+| 经典 ESP32 | 9 | `CONFIG_BTDM_CTRL_BLE_MAX_CONN=9` |
+| ESP32-C2 | 2 | 控制器随 NimBLE 连接数配置 |
+| ESP32-C3 / S3 | 9 | `CONFIG_BT_CTRL_BLE_MAX_ACT=10` |
+| ESP32-C5 / C6 | 70 | 控制器随 NimBLE 连接数配置 |
+| ESP32-H2，IDF 5.5～5.5.2 | 35 | 按 SDK 版本选用 `sdkconfig.ble_max_h2_legacy` |
+| ESP32-H2，IDF 5.5.3 及之后的已核对版本 | 70 | 与 C5/C6 共用 `sdkconfig.ble_max_c6` |
+
+这是 Central/Peripheral 共用的 BLE 连接总数上限，不是同时发起连接的数量。
+aioble 主动建连仍需逐个完成；增加连接槽不改变其停扫和 pending connect 限制。
+S3/C3 的 10 个活动槽由连接、扫描、广播和周期同步共享，九条连接占用后不能再
+保证扫描和广播同时运行；需要为这些活动留出容量。
+
+增加连接数会增加蓝牙内存开销，尤其是 35/70 连接的配置；SDK 上限不保证所有
+连接都能在当前内存、连接间隔、Wi-Fi 负载下稳定工作，也不保证旧脚本剩余堆大小相同。
+`CONFIG_BT_NIMBLE_GATT_MAX_PROCS` 保留 SDK 默认值 4，MSYS/ACL 缓冲池也保留原配置。
+连接槽和 GATT 请求池不同；多连接业务应限制同时提交的 GATT 请求，按负载另行调整
+缓冲池，不能将 70 条连接理解为 70 个 GATT 请求都能同时在途。
+
+配置片段作为板型默认值载入，后续板型/variant 的 sdkconfig 仍可降低连接数。
+已有构建目录的 `sdkconfig` 优先，应使用新构建目录，或显式更新该表涉及的选项；
+切换 H2 的 IDF 版本时也需重新生成/核对配置。P4 外接控制器的两端容量需分别确认，
+本次不将原生目标的上限应用到 P4；其既有配置保持不变。
+
+### BLE5 绑定生成
 
 共享 `extmod` 没有可用的方法表扩展钩子，因此 `ble5/make_bindings.py`
 在 CMake 配置阶段生成构建目录中的两个 ESP32 专用翻译单元。它读取共享

@@ -103,6 +103,10 @@ void socket_events_deinit(void) {
     socket_events_head = NULL;
 }
 
+bool socket_events_active(void) {
+    return socket_events_head != NULL;
+}
+
 // Assumes the socket is not already in the linked list, and adds it
 static void socket_events_add(socket_obj_t *sock) {
     sock->events_next = socket_events_head;

@@ -1,0 +1,4 @@
+# ESP32-C3 / S3: nine host connections and ten shared controller activities.
+# Scanning, advertising and periodic sync also consume these activity slots.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=9
+CONFIG_BT_CTRL_BLE_MAX_ACT=10

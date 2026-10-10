@@ -100,6 +100,11 @@ mp_state_thread_t *mp_thread_get_state(void) {
 
 void mp_thread_set_state(mp_state_thread_t *state) {
     vTaskSetThreadLocalStoragePointer(NULL, 1, state);
+    if (state == NULL) {
+        // A synchronous BLE callback has left its temporary Python context.
+        // aioble's ThreadSafeFlag does not enqueue a scheduler callback.
+        mp_hal_wake_main_task_if_suspended();
+    }
 }
 
 mp_uint_t mp_thread_get_id(void) {

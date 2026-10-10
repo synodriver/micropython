@@ -35,6 +35,7 @@
 
 #include <stdio.h>
 #include "driver/uart.h" // For uart_get_sclk_freq()
+#include "esp_sleep.h"
 #include "hal/uart_hal.h"
 #include "soc/uart_periph.h"
 
@@ -79,6 +80,29 @@ void uart_stdout_init(void) {
     uart_hal_set_rxfifo_full_thr(&repl_hal, RXFIFO_FULL_THR);
     uart_hal_set_rx_timeout(&repl_hal, RXFIFO_RX_TIMEOUT);
     uart_hal_ena_intr_mask(&repl_hal, UART_INTR_RXFIFO_FULL | UART_INTR_RXFIFO_TOUT);
+}
+
+esp_err_t uart_stdout_set_wakeup(bool enable) {
+    if (enable) {
+        // UART wakeup consumes the triggering character. A host must send a
+        // preamble before input while the application is automatically asleep.
+        #if CONFIG_IDF_TARGET_ESP32P4
+        // Newer IDF revisions subtract 6 for HP UART (3 for LP UART).
+        // A threshold of 3 underflows the HP UART threshold register.
+        const int threshold = 6;
+        #else
+        const int threshold = 3;
+        #endif
+        esp_err_t ret = uart_set_wakeup_threshold(MICROPY_HW_UART_REPL, threshold);
+        if (ret != ESP_OK) {
+            return ret;
+        }
+        return esp_sleep_enable_uart_wakeup(MICROPY_HW_UART_REPL);
+    }
+    // IDF disables UART wakeup as a group using ESP_SLEEP_WAKEUP_UART;
+    // ESP_SLEEP_WAKEUP_UART1/2 are wakeup causes, not accepted selectors.
+    esp_err_t ret = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_UART);
+    return ret == ESP_ERR_INVALID_STATE ? ESP_OK : ret;
 }
 
 int uart_stdout_tx_strn(const char *str, size_t len) {

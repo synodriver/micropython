@@ -41,6 +41,19 @@ The :mod:`machine` module::
 
     machine.freq()          # get the current frequency of the CPU
     machine.freq(240000000) # set the CPU frequency to 240 MHz
+    machine.freq(machine.freq(), True)  # enable automatic light sleep
+    machine.freq(machine.freq(), False) # disable automatic light sleep
+
+The optional second argument to ``machine.freq(hz, light_sleep_enable)``
+controls ESP-IDF automatic light sleep. It defaults to ``False`` so existing
+one-argument calls keep their previous behaviour. Automatic light sleep is
+entered by the idle task when no task or peripheral prevents it; it does not
+replace explicit ``machine.lightsleep()`` calls. Disable it before using the
+manual sleep APIs.
+
+Active USB connections can prevent automatic light sleep, including while the
+application blocks on network I/O. UART console wakeup consumes the triggering
+characters: send a preamble, allow time for wakeup, then send the actual input.
 
 The :mod:`esp` module::
 

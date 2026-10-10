@@ -1,0 +1,2 @@
+# ESP32-C2: the SDK limits this controller to two connections.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2

@@ -405,8 +405,10 @@ MP_NORETURN static void mp_machine_reset(void) {
 }
 
 static mp_obj_t mp_machine_unique_id(void) {
-    uint8_t chipid[6];
-    esp_efuse_mac_get_default(chipid);
+    // The SDK writes 8 bytes on IEEE 802.15.4 targets. Keep the first 6 bytes
+    // as the identifier to preserve the values used by existing applications.
+    uint8_t chipid[8];
+    check_esp_err(esp_efuse_mac_get_default(chipid));
     return mp_obj_new_bytes(chipid, 6);
 }
 

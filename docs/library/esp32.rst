@@ -13,6 +13,154 @@ controlling ESP32 modules.
 Functions
 ---------
 
+.. function:: mac_addr_len_get(type)
+
+    Return the ESP-IDF MAC table entry length in bytes: 6, 8 or 2. A valid type
+    unsupported by the current chip/SDK configuration returns 0. Use one of
+    the ``ESP_MAC_*`` constants below. This query does not read, generate or
+    cache an address.
+
+    This function, ``read_mac()`` and ``iface_mac_addr_set()`` first convert
+    *type* using MicroPython's ``mp_obj_get_int()`` rules. A successful
+    conversion followed by a value outside the valid enum range raises
+    ``ValueError``. Integer conversion overflow raises ``OverflowError``
+    (for example, with ``1 << 100``); objects without integer conversion
+    support, such as ``None``, raise ``TypeError``. Exceptions raised by a
+    custom integer conversion method propagate unchanged. Conversion limits
+    depend on the runtime implementation and need not cover the entire
+    mathematical range of the machine integer type.
+
+    A nonzero length does not imply that the board has the corresponding
+    peripheral or that its driver is initialised. It also does not imply that
+    a custom eFuse MAC has been programmed.
+
+.. function:: read_mac(type)
+
+    Return the ESP-IDF MAC address for *type* as ``bytes``. Use one of the
+    ``ESP_MAC_*`` constants below. Addresses are in normal display order.
+    This works independently of BLE5 and does not initialise a network driver.
+
+    ESP-IDF returns an address from its MAC table, generating and caching
+    interface addresses from the base MAC when needed. A previously set
+    interface address overrides this derivation. The result can differ from
+    the address currently used by a driver, for example after
+    ``WLAN.config(mac=...)`` or when Bluetooth uses a random/private address.
+
+    Known but unsupported types raise ``OSError``. Invalid type arguments
+    follow the rules described under ``mac_addr_len_get()``. Reading an unset
+    custom eFuse MAC can also raise ``OSError``.
+
+.. function:: iface_mac_addr_set(mac, type)
+
+    Set an address in the ESP-IDF MAC table, returning ``None``. *mac* must be
+    a readable buffer with exactly the length required by *type*. An incorrect
+    length raises ``ValueError``; SDK errors raise ``OSError``. Type argument
+    validation follows the rules described under ``mac_addr_len_get()``.
+
+    Call this before initialising the corresponding Wi-Fi, Bluetooth or
+    Ethernet driver. Constructing a ``network.WLAN`` object already initialises
+    Wi-Fi. This function does not update a running driver or an external
+    controller, and disabling an interface does not necessarily deinitialise
+    its driver. Use ``WLAN.config(mac=...)`` to change the Wi-Fi driver's MAC.
+
+    Set ``ESP_MAC_BASE`` before any derived interface address is first read or
+    generated. Changing the base does not invalidate cached interface addresses.
+    A base MAC must be unicast; for a locally administered address, set bit
+    ``0x02`` and clear bit ``0x01`` in its first byte.
+
+    These settings modify RAM only, persist across MicroPython soft resets,
+    and are lost on a hardware reset or deep-sleep restart. They do not write
+    eFuse or NVS. ``ESP_MAC_EFUSE_FACTORY`` and ``ESP_MAC_EFUSE_CUSTOM`` cannot be
+    set. Setting ``ESP_MAC_EFUSE_EXT`` overrides the cached extension only.
+
+.. function:: derive_local_mac(mac)
+
+    Return a six-byte locally administered address derived from the six-byte
+    readable buffer *mac*, without modifying the input or the SDK MAC table.
+    ESP-IDF sets bit ``0x02`` in the first byte. If it was already set, ESP-IDF
+    also toggles bit ``0x04`` to produce a different address.
+
+    The result is deterministic, does not guarantee uniqueness, and preserves
+    the multicast bit. Supply a unicast source when a unicast result is needed.
+    An incorrect length raises ``ValueError``.
+
+.. function:: efuse_mac_get_default()
+
+    Return the factory-programmed MAC directly from eFuse as ``bytes``. This
+    bypasses the SDK MAC table without modifying it or initialising a driver.
+    SDK errors raise ``OSError``. Validation follows the SDK's chip-specific
+    rules and build configuration. On classic ESP32,
+    ``CONFIG_ESP_MAC_IGNORE_MAC_CRC_ERROR=y`` allows CRC mismatches for both
+    factory and custom MAC reads; these bindings do not enforce an additional
+    CRC check.
+
+    On chips with IEEE 802.15.4 support, the result is eight bytes: ESP-IDF
+    inserts the actual two-byte eFuse extension between the first and last
+    three bytes of the MAC-48. On other chips, the result is six bytes.
+    ``read_mac(ESP_MAC_EFUSE_FACTORY)`` and
+    ``mac_addr_len_get(ESP_MAC_EFUSE_FACTORY)`` still use a six-byte table entry.
+
+    To recover MAC-48 from an eight-byte result *raw*, use
+    ``raw[:3] + raw[5:]``, rather than taking its first six bytes.
+
+.. function:: efuse_mac_get_custom()
+
+    Return the custom MAC directly from eFuse as ``bytes``, with the same
+    six/eight-byte layout as ``efuse_mac_get_default()``. If the SDK reports
+    an unset address, a validation failure or another error, this function
+    raises ``OSError`` without falling back to the factory MAC. Validation
+    follows the SDK policy described under ``efuse_mac_get_default()``;
+    the classic ESP32 version/CRC format does not apply to all chips.
+
+    Both direct eFuse functions read without using the cached base/interface
+    addresses or a cached ``ESP_MAC_EFUSE_EXT`` override. Neither writes eFuse.
+    ``read_mac(ESP_MAC_EFUSE_CUSTOM)`` and its length query still use six bytes.
+
+The following constants select the MAC type. Their presence does not imply
+support on every chip or SDK configuration. In particular, local MAC APIs on
+ESP32-P4 do not configure its external Wi-Fi/Bluetooth controller.
+
+.. list-table:: MAC address types
+    :header-rows: 1
+
+    * - Constant
+      - Length in bytes
+    * - ``ESP_MAC_WIFI_STA``
+      - 6
+    * - ``ESP_MAC_WIFI_SOFTAP``
+      - 6
+    * - ``ESP_MAC_BT``
+      - 6
+    * - ``ESP_MAC_ETH``
+      - 6
+    * - ``ESP_MAC_IEEE802154``
+      - 8; requires IEEE 802.15.4 hardware support
+    * - ``ESP_MAC_BASE``
+      - 6
+    * - ``ESP_MAC_EFUSE_FACTORY``
+      - 6; read only
+    * - ``ESP_MAC_EFUSE_CUSTOM``
+      - 6; read only
+    * - ``ESP_MAC_EFUSE_EXT``
+      - 2; requires IEEE 802.15.4 hardware support
+
+For example, at startup before creating network interfaces::
+
+    import esp32
+
+    factory_mac = esp32.read_mac(esp32.ESP_MAC_EFUSE_FACTORY)
+    local_mac = esp32.derive_local_mac(factory_mac)
+    esp32.iface_mac_addr_set(local_mac, esp32.ESP_MAC_BASE)
+
+On this port, ``machine.unique_id()`` continues to return the first six bytes
+of the SDK's direct factory eFuse result. Its temporary buffer accommodates
+the eight-byte SDK output on IEEE 802.15.4 chips, preserving existing
+identifier values and lengths. SDK read errors raise ``OSError``.
+On IEEE 802.15.4 chips, this identifier includes the extension field and is
+neither the complete MAC-48 nor the complete EUI-64. Use the direct eFuse
+functions above when the complete address is needed. Changes to the SDK MAC
+table do not affect the identifier.
+
 .. function:: wake_on_touch(wake)
 
     Configure whether or not a touch will wake the device from sleep.

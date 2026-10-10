@@ -26,6 +26,12 @@ The optional second argument defaults to `False`, preserving existing calls.
 See [README.lightsleep.md](README.lightsleep.md) for configuration, waiting
 behaviour and BLE/console compatibility.
 
+The `esp32` module provides `mac_addr_len_get()`, `read_mac()`,
+`iface_mac_addr_set()`, `derive_local_mac()`, `efuse_mac_get_default()` and
+`efuse_mac_get_custom()` using the public ESP-IDF MAC APIs. See
+[README.mac.md](README.mac.md) for address types, eFuse layouts and
+initialisation requirements.
+
 Initial development of this ESP32 port was sponsored in part by Microbric Pty Ltd.
 
 Choosing a suitable chip

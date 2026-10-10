@@ -31,6 +31,7 @@
 #include <sys/time.h>
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
+#include "esp_mac.h"
 #include "multi_heap.h"
 
 #include "py/nlr.h"
@@ -47,6 +48,92 @@
 #include "../multi_heap_platform.h"
 #include "../heap_private.h"
 #include "driver/rtc_io.h"
+
+static size_t esp32_mac_addr_len(mp_int_t type) {
+    // Validate before casting to the SDK enum, so large integers cannot alias
+    // another MAC type on targets whose enum representation is narrower.
+    if (type < ESP_MAC_WIFI_STA || type > ESP_MAC_EFUSE_EXT) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid MAC type"));
+    }
+    #if !SOC_IEEE802154_SUPPORTED
+    if (type == ESP_MAC_IEEE802154 || type == ESP_MAC_EFUSE_EXT) {
+        return 0;
+    }
+    #endif
+    size_t len = esp_mac_addr_len_get((esp_mac_type_t)type);
+    if (len > 8) {
+        check_esp_err(ESP_ERR_NOT_SUPPORTED);
+    }
+    return len;
+}
+
+static mp_obj_t esp32_mac_addr_len_get(mp_obj_t type_in) {
+    return MP_OBJ_NEW_SMALL_INT(esp32_mac_addr_len(mp_obj_get_int(type_in)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(esp32_mac_addr_len_get_obj, esp32_mac_addr_len_get);
+
+static mp_obj_t esp32_read_mac(mp_obj_t type_in) {
+    mp_int_t type = mp_obj_get_int(type_in);
+    size_t len = esp32_mac_addr_len(type);
+    if (len == 0) {
+        check_esp_err(ESP_ERR_NOT_SUPPORTED);
+    }
+    uint8_t mac[8];
+    check_esp_err(esp_read_mac(mac, (esp_mac_type_t)type));
+    return mp_obj_new_bytes(mac, len);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(esp32_read_mac_obj, esp32_read_mac);
+
+static mp_obj_t esp32_iface_mac_addr_set(mp_obj_t mac_in, mp_obj_t type_in) {
+    mp_int_t type = mp_obj_get_int(type_in);
+    size_t len = esp32_mac_addr_len(type);
+    if (len == 0) {
+        check_esp_err(ESP_ERR_NOT_SUPPORTED);
+    }
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(mac_in, &bufinfo, MP_BUFFER_READ);
+    if (bufinfo.len != len) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid MAC length"));
+    }
+    // This updates the SDK MAC table, not an already initialised driver.
+    check_esp_err(esp_iface_mac_addr_set(bufinfo.buf, (esp_mac_type_t)type));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(esp32_iface_mac_addr_set_obj, esp32_iface_mac_addr_set);
+
+static mp_obj_t esp32_derive_local_mac(mp_obj_t mac_in) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(mac_in, &bufinfo, MP_BUFFER_READ);
+    if (bufinfo.len != 6) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid MAC length"));
+    }
+    uint8_t mac[6];
+    check_esp_err(esp_derive_local_mac(mac, bufinfo.buf));
+    return mp_obj_new_bytes(mac, sizeof(mac));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(esp32_derive_local_mac_obj, esp32_derive_local_mac);
+
+static mp_obj_t esp32_efuse_mac_get_default(void) {
+    #if SOC_IEEE802154_SUPPORTED
+    uint8_t mac[8];
+    #else
+    uint8_t mac[6];
+    #endif
+    check_esp_err(esp_efuse_mac_get_default(mac));
+    return mp_obj_new_bytes(mac, sizeof(mac));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(esp32_efuse_mac_get_default_obj, esp32_efuse_mac_get_default);
+
+static mp_obj_t esp32_efuse_mac_get_custom(void) {
+    #if SOC_IEEE802154_SUPPORTED
+    uint8_t mac[8];
+    #else
+    uint8_t mac[6];
+    #endif
+    check_esp_err(esp_efuse_mac_get_custom(mac));
+    return mp_obj_new_bytes(mac, sizeof(mac));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(esp32_efuse_mac_get_custom_obj, esp32_efuse_mac_get_custom);
 
 #if SOC_TOUCH_SENSOR_SUPPORTED
 static mp_obj_t esp32_wake_on_touch(const mp_obj_t wake) {
@@ -318,6 +405,13 @@ static MP_DEFINE_CONST_FUN_OBJ_0(esp32_idf_task_info_obj, esp32_idf_task_info);
 static const mp_rom_map_elem_t esp32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_esp32) },
 
+    { MP_ROM_QSTR(MP_QSTR_mac_addr_len_get), MP_ROM_PTR(&esp32_mac_addr_len_get_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_mac), MP_ROM_PTR(&esp32_read_mac_obj) },
+    { MP_ROM_QSTR(MP_QSTR_iface_mac_addr_set), MP_ROM_PTR(&esp32_iface_mac_addr_set_obj) },
+    { MP_ROM_QSTR(MP_QSTR_derive_local_mac), MP_ROM_PTR(&esp32_derive_local_mac_obj) },
+    { MP_ROM_QSTR(MP_QSTR_efuse_mac_get_default), MP_ROM_PTR(&esp32_efuse_mac_get_default_obj) },
+    { MP_ROM_QSTR(MP_QSTR_efuse_mac_get_custom), MP_ROM_PTR(&esp32_efuse_mac_get_custom_obj) },
+
     #if SOC_TOUCH_SENSOR_SUPPORTED
     { MP_ROM_QSTR(MP_QSTR_wake_on_touch), MP_ROM_PTR(&esp32_wake_on_touch_obj) },
     #endif
@@ -364,6 +458,16 @@ static const mp_rom_map_elem_t esp32_module_globals_table[] = {
 
     { MP_ROM_QSTR(MP_QSTR_HEAP_DATA), MP_ROM_INT(MALLOC_CAP_8BIT) },
     { MP_ROM_QSTR(MP_QSTR_HEAP_EXEC), MP_ROM_INT(MALLOC_CAP_EXEC) },
+
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_WIFI_STA), MP_ROM_INT(ESP_MAC_WIFI_STA) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_WIFI_SOFTAP), MP_ROM_INT(ESP_MAC_WIFI_SOFTAP) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_BT), MP_ROM_INT(ESP_MAC_BT) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_ETH), MP_ROM_INT(ESP_MAC_ETH) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_IEEE802154), MP_ROM_INT(ESP_MAC_IEEE802154) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_BASE), MP_ROM_INT(ESP_MAC_BASE) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_EFUSE_FACTORY), MP_ROM_INT(ESP_MAC_EFUSE_FACTORY) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_EFUSE_CUSTOM), MP_ROM_INT(ESP_MAC_EFUSE_CUSTOM) },
+    { MP_ROM_QSTR(MP_QSTR_ESP_MAC_EFUSE_EXT), MP_ROM_INT(ESP_MAC_EFUSE_EXT) },
 };
 
 static MP_DEFINE_CONST_DICT(esp32_module_globals, esp32_module_globals_table);

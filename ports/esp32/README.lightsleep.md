@@ -1,22 +1,26 @@
 # ESP32 自动 light sleep
 
-ESP32 port 的接口为 `machine.freq([hz[, light_sleep_enable]])`，仅接受位置参数。
-`light_sleep_enable` 可选，省略时为 `False`。
+ESP32 port 的接口支持读取、旧式固定频率设置和三位置参数的 PM 配置：
+`machine.freq()`、`machine.freq(hz)`、`machine.freq(min_freq_hz, max_freq_hz, light_sleep_enable)`。
+频率参数以 Hz 为单位；ESP-IDF PM 配置使用 MHz，三参数形式的频率输入必须是正的整 MHz。
+两参数形式不支持。
 
 ```python
 import machine
 import time
 
 hz = machine.freq()
-machine.freq(hz, True)   # 保持当前运行频率，并允许自动 light sleep
+machine.freq(80000000, 240000000, True)  # 在 80–240 MHz 范围内调频，并允许自动 light sleep
 time.sleep_ms(1000)      # 任务阻塞时，IDF 可以选择进入休眠
-machine.freq(hz, False)  # 关闭自动 light sleep
-machine.freq(hz)         # 旧调用也会关闭自动 light sleep
+machine.freq(hz, hz, False)  # 固定在当前频率，关闭自动 light sleep
+machine.freq(hz)             # 旧式单参数调用仍设置固定频率并关闭自动休眠
 ```
 
-`machine.freq()` 仍返回当前 CPU 频率，不改变休眠开关。开机和软复位后自动休眠
+示例中的 80/240 MHz 适用于支持这两个频点的芯片；各 ESP32 芯片支持的频点和组合不同，
+IDF 会校验实际范围。范围模式下 `machine.freq()` 返回查询时的实际 CPU 频率，可能在范围内变化。
+`machine.freq()` 读取频率时不改变休眠开关。开机和软复位后自动休眠
 默认关闭；软复位保留频率。关闭时保留原来的短等待方式和 `machine.idle()` 行为。
-开启时，运行频率仍固定，未加入动态调频范围。
+开启时可由 PM 在配置的最小和最大频率之间动态调频。
 
 H2 可设置 16/32/48/64/96 MHz，默认 96 MHz 可以直接用于上述用法。
 P4 提供 20/40/90/100/180/200/360/400 MHz 的候选值，具体可用档位由对应 IDF
@@ -24,8 +28,8 @@ P4 提供 20/40/90/100/180/200/360/400 MHz 的候选值，具体可用档位由�
 
 ## 关闭自动休眠时的旧脚本兼容性
 
-`machine.freq(hz)` 与 `machine.freq(hz, False)` 都设置固定频率并禁止 CPU 自动
-light sleep。旧脚本不调用第二参数时，不会主动开启这项功能；无参 getter 则只读频率，
+`machine.freq(hz)` 与 `machine.freq(hz, hz, False)` 都设置固定频率并禁止 CPU 自动
+light sleep。旧脚本只调用单参数 setter 时，不会主动开启这项功能；无参 getter 则只读频率，
 如果其他代码已启用自动休眠，读取频率不会将其关闭。
 
 关闭状态下，有线程支持的事件等待和 `sleep_ms()` 保留一 tick 等待，无线程构建的
@@ -39,8 +43,8 @@ light sleep。旧脚本不调用第二参数时，不会主动开启这项功能
 需求，即使 CPU 自动休眠关闭，也不会恢复旧蓝牙资源配额；内存接近上限的旧应用需复测，
 必要时在板型配置中降低连接数。连接容量与具体配置见 `README.ble5.md`。
 
-如果启动代码或库主动调用过 `machine.freq(hz, True)`，旧脚本可先执行
-`machine.freq(machine.freq(), False)` 再运行。该调用关闭自动机制，不撤销 BLE 编译配置，
+如果启动代码或库主动启用了自动休眠，旧脚本可先执行
+`machine.freq(machine.freq())` 再运行。该调用关闭自动机制，不撤销 BLE 编译配置，
 也不把整个 SDK/驱动状态回滚成旧固件。
 
 ## 实际进入休眠的条件
@@ -75,6 +79,68 @@ USB Serial/JTAG 的全局休眠检查还需要 `CONFIG_ESP_TIMER_IN_IRAM=y`（�
 开启后的 `machine.idle()` 处理事件并等待至多 100 ms；关闭时仍只让出 CPU。
 REPL 等待输入保持每 tick 轮询，因此在 REPL 提示符处通常不会进入自动休眠。
 
+## Python PM 锁：临时阻止自动休眠
+
+`esp32.PMLock(kind, *, name=None)` 创建一个初始未获取的锁；它独立于 BLE5，
+不要求 `CONFIG_PM_PROFILING`。`CONFIG_PM_ENABLE` 关闭时创建抛
+`OSError(EOPNOTSUPP)`。三种类型常量位于 `esp32` 模块：
+
+| 常量 | 约束 |
+| --- | --- |
+| `PM_NO_LIGHT_SLEEP` | 持有期间禁止 PM 自动 light sleep |
+| `PM_CPU_FREQ_MAX` | 要求使用 PM 配置的最高 CPU 频率，也阻止自动休眠 |
+| `PM_APB_FREQ_MAX` | 要求 APB 最大频率模式，实际频率由芯片及 PM 配置决定，也阻止自动休眠 |
+
+旧式 `machine.freq(hz)` 将 PM 最小/最大 CPU 频率设为同一值；三参数范围形式可分别设置。
+若只需阻止自动休眠，通常选择 `PM_NO_LIGHT_SLEEP` 即可。CPU 锁不把频率提升到芯片硬件上限，也不锁定某个数值；
+锁存续期间仍可以调用 `machine.freq()` 修改配置。
+
+```python
+import esp32
+import machine
+import time
+
+lock = esp32.PMLock(esp32.PM_NO_LIGHT_SLEEP, name="sensor")
+try:
+    hz = machine.freq()
+    machine.freq(hz, hz, True)
+    with lock:
+        time.sleep_ms(100)  # 此期间禁止自动 light sleep
+        print(esp32.pm_dump_locks())
+    # 锁已释放，但仍存在，可重复使用；满足其他条件后可以自动休眠。
+finally:
+    lock.deinit()
+```
+
+- `acquire()` 和 `release()` 返回 `None`，不等待其他调用者，支持嵌套计数；
+  获取 N 次须释放 N 次。未持有时释放抛 `RuntimeError`。这是电源约束计数，
+  不是线程互斥锁；多个模块可分别创建对象，各自维护自己的获取/释放。
+- `with lock as value` 返回同一个对象，进入获取一次、退出释放一次；异常不被吞掉。
+  协程可在普通 `with` 内 `await`，取消导致作用域退出时也会释放。不要在作用域内
+  手动释放由 `with` 获取的那一次计数。
+- `deinit()` 返回 `None`，可重复调用；持有期间调用抛 `OSError(EBUSY)`。
+  销毁后 `acquire()`、`release()` 和再次进入 `with` 抛 `ValueError`。
+- `name` 只能为 `str` 或 `None`，不允许内嵌 NUL；名称被复制并与锁对象一起存储。
+  保存最多 15 个 UTF-8 字节的完整字符前缀，避免 SDK 截断多字节字符导致诊断返回
+  `UnicodeError`；长名称可能显示为相同前缀。
+- GC 最终回收对象时释放剩余计数并删除 SDK 锁；软复位在线程停止后通过现有
+  `gc_sweep_all()` 清理全部对象，包括仍有 Python 引用的锁。正常代码应使用 `with`
+  或 `try/finally`，GC 的时机不保证，任务异常终止也不会自动释放仍被引用的锁。
+  不要手动调用用于 GC 的 `__del__()`。
+- 普通 Python 线程调用在 GIL 内串行化，普通协程/调度回调可调用；不支持硬中断，
+  ISR 中调用抛 `RuntimeError`。持锁不保证 Python IRQ 回调的硬实时响应。
+
+创建、释放和销毁均不修改自动休眠开关或唤醒源。关闭自动休眠后，释放锁不会
+重新开启休眠。PM 锁也不阻止应用显式调用 `machine.lightsleep()` / `deepsleep()`；
+原有“自动模式开启时禁止手动休眠”的检查继续有效。无线驱动的 PM 锁独立管理，
+Python 只能操作自己创建的锁。最后一个用户锁释放后仍不保证立即休眠。
+
+设备测试：`tests/ports/esp32/esp32_pm_lock.py` 检查嵌套、异常、名称及 GC；
+`esp32_pm_lock_async.py` 检查协程取消。软复位应另在 REPL 创建并获取命名锁，
+按 Ctrl-D 后确认 `pm_dump_locks()` 中已无该名称。实际功耗、时序仍需实机验证。
+静态检查脚本 `check_pm_lock.py --idf <IDF目录> --idf-tag v5.5.5 --compiler <编译器>`
+使用真实 MicroPython 绑定宏和 IDF PM 头文件，不生成目标文件或固件。
+
 ## BLE、USB 与 UART
 
 PM/tickless 配置独立于 BLE5，经典 ESP32、S2 和 P4 也可使用自动休眠接口。
@@ -105,14 +171,15 @@ UART REPL 在自动休眠启停时设置/撤销 UART 唤醒。唤醒所用的前
 恢复自动休眠与无线通信，应重新初始化无线驱动。
 
 ```python
-machine.freq(machine.freq(), False)
+hz = machine.freq()
+machine.freq(hz, hz, False)
 machine.lightsleep(1000)
 ```
 
 ## GPIO 与 Pin.irq 唤醒
 
 `esp32.wake_on_ext0()`、`wake_on_ext1()`、`wake_on_gpio()` 的配置同时适用于手动休眠
-和自动 light sleep。先配置再调用 `machine.freq(hz, True)`，或者在自动模式开启后
+和自动 light sleep。先配置再调用 `machine.freq(hz, hz, True)`，或者在自动模式开启后
 更新配置，均可生效。关闭自动模式时撤销它安装的唤醒源，保留 Python 侧配置供下次
 启用或手动休眠使用；软复位会清空这些配置。动态更新失败会恢复旧配置；如果恢复也
 失败，会关闭自动模式并抛异常，避免在缺少预期唤醒源时继续休眠。
@@ -127,10 +194,12 @@ from machine import Pin
 
 p = Pin(8, Pin.IN)  # 此例用于 H2；请确认板上引脚空闲并连接外部下拉
 esp32.wake_on_ext1(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
-machine.freq(machine.freq(), True)
+hz = machine.freq()
+machine.freq(hz, hz, True)
 time.sleep_ms(1000)
 esp32.wake_on_ext1(pins=[])  # 取消 EXT1 唤醒
-machine.freq(machine.freq(), False)
+hz = machine.freq()
+machine.freq(hz, hz, False)
 ```
 
 GPIO 唤醒可以提前唤醒 CPU；`time.sleep_ms()` 仍等待原定截止时间，不会因 GPIO 唤醒

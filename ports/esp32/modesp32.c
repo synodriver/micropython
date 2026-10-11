@@ -451,6 +451,10 @@ static const mp_rom_map_elem_t esp32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_efuse_mac_get_default), MP_ROM_PTR(&esp32_efuse_mac_get_default_obj) },
     { MP_ROM_QSTR(MP_QSTR_efuse_mac_get_custom), MP_ROM_PTR(&esp32_efuse_mac_get_custom_obj) },
     { MP_ROM_QSTR(MP_QSTR_pm_dump_locks), MP_ROM_PTR(&esp32_pm_dump_locks_obj) },
+    { MP_ROM_QSTR(MP_QSTR_PMLock), MP_ROM_PTR(&esp32_pm_lock_type) },
+    { MP_ROM_QSTR(MP_QSTR_PM_CPU_FREQ_MAX), MP_ROM_INT(ESP_PM_CPU_FREQ_MAX) },
+    { MP_ROM_QSTR(MP_QSTR_PM_APB_FREQ_MAX), MP_ROM_INT(ESP_PM_APB_FREQ_MAX) },
+    { MP_ROM_QSTR(MP_QSTR_PM_NO_LIGHT_SLEEP), MP_ROM_INT(ESP_PM_NO_LIGHT_SLEEP) },
 
     #if SOC_TOUCH_SENSOR_SUPPORTED
     { MP_ROM_QSTR(MP_QSTR_wake_on_touch), MP_ROM_PTR(&esp32_wake_on_touch_obj) },

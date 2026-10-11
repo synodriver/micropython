@@ -12,7 +12,7 @@ if "ESP32S3" not in os.uname().machine.upper().replace("-", ""):
 
 hz = machine.freq()
 try:
-    machine.freq(hz, True)
+    machine.freq(hz, hz, True)
 except TypeError:
     print("SKIP")
     raise SystemExit
@@ -21,7 +21,7 @@ except ValueError as error:
         raise
     print("SKIP")
     raise SystemExit
-machine.freq(hz, False)
+machine.freq(hz, hz, False)
 
 p = Pin(4, Pin.IN)
 # IDF's S3 GPIO_PIN_MUX_REG[4]: DR_REG_IO_MUX_BASE (0x60009000) + 0x14.
@@ -39,7 +39,7 @@ try:
     esp32.wake_on_ext0(pin=None)
     esp32.wake_on_ext1(pins=[])
     sleep_bits(0)
-    machine.freq(hz, True)
+    machine.freq(hz, hz, True)
     try:
         esp32.wake_on_gpio(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
     except OSError as error:
@@ -53,7 +53,7 @@ try:
     print("cancel restores sleep state")
 
     esp32.wake_on_gpio(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
-    machine.freq(hz, False)
+    machine.freq(hz, hz, False)
     assert machine.mem32[iomux] & sleep_mask == 0
     print("disable restores sleep state")
 
@@ -61,6 +61,6 @@ try:
     assert machine.mem32[iomux] & sleep_mask == 0
     print("manual sleep restores sleep state")
 finally:
-    machine.freq(hz, False)
+    machine.freq(hz, hz, False)
     esp32.wake_on_gpio(pins=[])
     sleep_bits(original)

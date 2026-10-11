@@ -61,6 +61,7 @@ int fake_sched_state;
 mp_int_t mp_obj_get_int(mp_obj_t);
 bool mp_obj_is_true(mp_obj_t);
 void mp_raise_ValueError(const char *);
+void mp_raise_TypeError(const char *);
 void check_esp_err(esp_err_t);
 void mp_raise_OSError(int);
 mp_obj_t mp_obj_new_str(const char *, size_t);
@@ -166,6 +167,7 @@ def main():
     functions = {
         "modmachine.c": (
             "machine_auto_lightsleep_enabled",
+            "mp_machine_check_freq",
             "mp_machine_set_freq",
             "machine_disable_auto_lightsleep",
         ),
@@ -188,7 +190,7 @@ def main():
         for name in names
     )
     compiler_options = (
-        ["/nologo", "/Zs", "/std:c11", "/TC", "/WX"]
+        ["/nologo", "/Zs", "/std:c11", "/TC", "/WX", "/we4013"]
         if Path(options.compiler).stem.lower() == "cl"
         else ["-fsyntax-only", "-std=c11", "-Werror=implicit-function-declaration"]
     )

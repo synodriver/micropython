@@ -175,6 +175,71 @@ table do not affect the identifier.
     change while it is produced. It does not show every reason sleep may be
     skipped, such as a busy task or a USB skip-sleep callback.
 
+.. class:: PMLock(kind, *, name=None)
+
+    Create an initially unacquired ESP-IDF power-management lock. *kind* is one
+    of ``esp32.PM_NO_LIGHT_SLEEP``, ``esp32.PM_CPU_FREQ_MAX`` or
+    ``esp32.PM_APB_FREQ_MAX``. These respectively prevent automatic light sleep,
+    require the maximum configured CPU frequency, or require the SDK's maximum
+    APB frequency mode. All three prevent automatic light sleep while held.
+    CPU maximum refers to the PM configuration, not the chip's hardware limit;
+    APB frequencies depend on the chip and PM configuration.
+
+    The optional *name* is a string without embedded NUL characters, or ``None``.
+    Its diagnostic prefix is copied for the lifetime of the lock: at most
+    15 UTF-8 bytes, ending at a complete character. This avoids the SDK dump
+    splitting a character when it truncates names. Long names can have the
+    same displayed prefix.
+    This API requires ``CONFIG_PM_ENABLE``, but neither BLE nor
+    ``CONFIG_PM_PROFILING``. Creation raises ``OSError(EOPNOTSUPP)`` without PM.
+
+    A lock supports context management: entering acquires it once and returns
+    the same object; exiting releases it once without suppressing exceptions::
+
+        lock = esp32.PMLock(esp32.PM_NO_LIGHT_SLEEP, name="sensor")
+        try:
+            with lock:
+                # Perform an operation that must not enter automatic sleep.
+                time.sleep_ms(100)
+        finally:
+            lock.deinit()
+
+    This is a recursive power constraint, not a mutual-exclusion lock. Calls
+    do not wait for another owner. Ordinary Python threads are serialized by
+    the GIL; ISR use raises ``RuntimeError``. A coroutine may use a normal
+    ``with`` block across ``await``; cancellation unwinds the context normally.
+
+    Collection releases all remaining acquisitions and deletes the SDK lock.
+    Soft reset finalises all locks after stopping Python threads. Use explicit
+    cleanup because GC timing is unspecified, and a terminated task's lock can
+    remain held if another object still references it. Do not call ``__del__``
+    directly. Locks belonging to drivers are unaffected.
+
+    Locks do not enable automatic sleep, change wakeup sources or prevent
+    explicit ``machine.lightsleep()`` / ``machine.deepsleep()`` calls. Existing
+    restrictions on manual sleep in automatic mode continue to apply. Releasing
+    a lock after disabling automatic sleep does not re-enable it. The legacy
+    ``machine.freq(hz)`` setter configures identical minimum and maximum CPU
+    frequencies; the ESP32 range form can configure them separately. For sleep
+    control alone, ``PM_NO_LIGHT_SLEEP`` is normally the appropriate choice.
+
+    .. method:: acquire()
+
+        Acquire once, returning ``None``. Acquisitions are counted and must be
+        balanced by releases. Counter overflow raises ``OverflowError``.
+
+    .. method:: release()
+
+        Release once, returning ``None``. Raises ``RuntimeError`` if not held.
+        Releasing the last user lock only permits sleep; other constraints may
+        still prevent it.
+
+    .. method:: deinit()
+
+        Delete the SDK lock and return ``None``. Repeated calls are harmless.
+        Raises ``OSError(EBUSY)`` while held. After deletion, acquiring,
+        releasing or entering a context raises ``ValueError``.
+
 .. function:: wake_on_touch(wake)
 
     Configure whether or not a touch will wake the device from sleep.
@@ -221,8 +286,9 @@ table do not affect the identifier.
        on those boards, the pins set here can only be used to wake from light sleep.
 
 The EXT0, EXT1 and GPIO wakeup settings are applied by manual sleep and by
-automatic light sleep enabled through ``machine.freq(hz, True)``.  Changes made
-while automatic sleep is enabled take effect immediately.  Disabling automatic
+automatic light sleep enabled through
+``machine.freq(min_freq_hz, max_freq_hz, True)``.  Changes made while automatic
+sleep is enabled take effect immediately.  Disabling automatic
 sleep preserves the settings for the next manual sleep or re-enable; a soft
 reset clears them.  Use ``wake_on_ext0(pin=None)`` or
 ``wake_on_ext1(pins=[])`` / ``wake_on_gpio(pins=[])`` to remove a source.

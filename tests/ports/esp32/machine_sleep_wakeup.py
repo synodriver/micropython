@@ -19,7 +19,7 @@ else:
 
 p = Pin(pin_number, Pin.IN)
 hz = machine.freq()
-machine.freq(hz, False)
+machine.freq(hz, hz, False)
 esp32.wake_on_gpio(pins=[])
 if hasattr(esp32, "wake_on_ext0"):
     esp32.wake_on_ext0(pin=None)
@@ -48,7 +48,7 @@ try:
     if hasattr(esp32, "wake_on_ext1"):
         # Configuration before enabling PM, and updates while PM is enabled.
         esp32.wake_on_ext1(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
-        machine.freq(hz, True)
+        machine.freq(hz, hz, True)
         # RTC and digital wakeup on the same pad must fail without committing
         # the GPIO config. This does not depend on which level the pin reads.
         rejected(lambda: esp32.wake_on_gpio(pins=(p,)), OSError)
@@ -59,7 +59,7 @@ try:
         esp32.wake_on_ext1(pins=[])
     else:
         esp32.wake_on_gpio(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
-        machine.freq(hz, True)
+        machine.freq(hz, hz, True)
         esp32.wake_on_gpio(level=esp32.WAKEUP_ALL_LOW)
         esp32.wake_on_gpio(pins=[])
         esp32.wake_on_gpio(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
@@ -76,12 +76,12 @@ try:
         p.irq(handler=None)
     print("sleep mode selection OK")
 
-    machine.freq(hz, False)
+    machine.freq(hz, hz, False)
     rejected(lambda: machine.lightsleep(-1), ValueError)
     machine.lightsleep(1)
     print("manual sleep OK")
 finally:
-    machine.freq(hz, False)
+    machine.freq(hz, hz, False)
     esp32.wake_on_gpio(pins=[])
     if hasattr(esp32, "wake_on_ext0"):
         esp32.wake_on_ext0(pin=None)

@@ -98,10 +98,7 @@ static mp_obj_t mp_machine_get_freq(void) {
     return mp_obj_new_int(esp_rom_get_cpu_ticks_per_us() * 1000000);
 }
 
-static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
-    mp_int_t freq = mp_obj_get_int(args[0]) / 1000000;
-    // A one-argument call retains the original fixed-frequency, no-sleep mode.
-    bool light_sleep_enable = n_args > 1 && mp_obj_is_true(args[1]);
+static void mp_machine_check_freq(mp_int_t freq) {
     #if CONFIG_IDF_TARGET_ESP32C2
     if (freq != 80 && freq != 120) {
         mp_raise_ValueError(MP_ERROR_TEXT("frequency must be 80MHz or 120MHz"));
@@ -131,9 +128,39 @@ static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
         #endif
     }
     #endif
+}
+
+static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
+    mp_int_t min_freq;
+    mp_int_t max_freq;
+    bool light_sleep_enable;
+    if (n_args == 1) {
+        // Preserve the original machine.freq(hz) fixed-frequency behaviour.
+        min_freq = max_freq = mp_obj_get_int(args[0]) / 1000000;
+        light_sleep_enable = false;
+    } else if (n_args == 3) {
+        mp_int_t min_freq_hz = mp_obj_get_int(args[0]);
+        mp_int_t max_freq_hz = mp_obj_get_int(args[1]);
+        if (min_freq_hz <= 0 || max_freq_hz <= 0
+            || min_freq_hz % 1000000 != 0 || max_freq_hz % 1000000 != 0) {
+            mp_raise_ValueError(MP_ERROR_TEXT("frequencies must be positive whole MHz values in Hz"));
+        }
+        if (min_freq_hz > max_freq_hz) {
+            mp_raise_ValueError(MP_ERROR_TEXT("minimum frequency exceeds maximum frequency"));
+        }
+        min_freq = min_freq_hz / 1000000;
+        max_freq = max_freq_hz / 1000000;
+        light_sleep_enable = mp_obj_is_true(args[2]);
+    } else {
+        mp_raise_TypeError(MP_ERROR_TEXT("freq() takes 0, 1 or 3 arguments"));
+    }
+    // The maximum must be one of the CPU clock frequencies supported by this
+    // target. The PM driver validates the minimum against its XTAL/REF_TICK
+    // constraints; it need not be one of the maximum-frequency choices above.
+    mp_machine_check_freq(max_freq);
     esp_pm_config_t pm = {
-        .max_freq_mhz = freq,
-        .min_freq_mhz = freq,
+        .max_freq_mhz = max_freq,
+        .min_freq_mhz = min_freq,
         .light_sleep_enable = light_sleep_enable,
     };
     if (light_sleep_enable) {
@@ -191,7 +218,7 @@ static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
         machine_sleep_unlock();
     }
     check_esp_err(ret);
-    while (esp_rom_get_cpu_ticks_per_us() != freq) {
+    while (esp_rom_get_cpu_ticks_per_us() < min_freq || esp_rom_get_cpu_ticks_per_us() > max_freq) {
         vTaskDelay(1);
     }
 }

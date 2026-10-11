@@ -6,10 +6,12 @@ import micropython
 import select
 import time
 
+hz = machine.freq()
+
 try:
     import _thread
 
-    machine.freq(machine.freq(), True)
+    machine.freq(hz, hz, True)
 except (ImportError, TypeError):
     print("SKIP")
     raise SystemExit
@@ -60,4 +62,4 @@ try:
 finally:
     if started:
         finished.acquire()
-    machine.freq(machine.freq(), False)
+    machine.freq(hz, hz, False)

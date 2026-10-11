@@ -199,6 +199,11 @@ def main():
             regdir = "register/" + (hw + "/" if hw else "")
             registers = header(f"components/soc/{chip}/{regdir}soc/gpio_struct.h")
             iomux = header(f"components/soc/{chip}/{regdir}soc/io_mux_reg.h")
+            iomux_struct = (
+                header(f"components/soc/{chip}/{regdir}soc/io_mux_struct.h")
+                if chip == "esp32c5"
+                else ""
+            )
             gpio_periph = header("components/soc/include/soc/gpio_periph.h")
             # Use SDK field masks and the real declaration of the IOMUX table.
             sleep_masks = "\n".join(
@@ -328,8 +333,10 @@ def main():
                 layout = check_sdk.preprocess(caps + registers, defs)
                 # Keep register subtypes as well as gpio_dev_t (IDF 6 uses both).
                 layout = re.sub(r"_Static_assert\([^;]*;", "", layout)
+                iomux_layout = iomux_struct
+                iomux_layout = re.sub(r"_Static_assert\([^;]*;", "", iomux_layout)
                 code = check_sdk.preprocess(
-                    f"{caps}\n{PREFIX}\n{sleep_masks}\n{mux_table.group()}\n{qstrs}\n{sdk_types}\n{layout}\n{constants}\n{runtime}\n{implementation}",
+                    f"{caps}\n{PREFIX}\n{sleep_masks}\n{mux_table.group()}\n{qstrs}\n{sdk_types}\n{layout}\n{iomux_layout}\n{constants}\n{runtime}\n{implementation}",
                     defs,
                 )
                 path.write_text(code, encoding="utf-8")

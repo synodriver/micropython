@@ -15,6 +15,9 @@
 #include "soc/gpio_periph.h"
 #include "soc/gpio_struct.h"
 #include "soc/io_mux_reg.h"
+#if CONFIG_IDF_TARGET_ESP32C5
+#include "soc/io_mux_struct.h"
+#endif
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "machine_rtc.h"
@@ -204,7 +207,17 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
             for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
                 if (config->gpio_pins & (1ULL << pin)) {
                     saved_irq_type[pin] = GPIO.pin[pin].int_type;
+                    #if CONFIG_IDF_TARGET_ESP32C5
+                    // ESP-IDF v5.5.5 declares GPIO_PIN_MUX_REG for C5 but does
+                    // not define its table in gpio_periph.c. Read the C5 IOMUX
+                    // register through the SDK's typed register structure.
+                    saved_sleep_config[pin] =
+                        (IO_MUX.gpio[pin].mcu_ie ? SLP_IE : 0)
+                        | (IO_MUX.gpio[pin].mcu_oe ? SLP_OE : 0)
+                        | (IO_MUX.gpio[pin].slp_sel ? SLP_SEL : 0);
+                    #else
                     saved_sleep_config[pin] = REG_READ(GPIO_PIN_MUX_REG[pin]) & (SLP_IE | SLP_OE | SLP_SEL);
+                    #endif
                     installed_gpio_pins |= 1ULL << pin;
                     err = gpio_sleep_set_direction(pin, GPIO_MODE_INPUT);
                     if (err == ESP_OK) {

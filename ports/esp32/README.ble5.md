@@ -12,6 +12,9 @@ ESP32-S3、C2、C3、C5、C6、H2 的构建增加 `boards/sdkconfig.ble5`，
 蓝牙配置约束。原始 ESP32、S2、P4 不启用这些 BLE5 接口；
 P4 即使使用外部控制器，也不会进入此次适配。原始 ESP32 的连接容量另见下表。
 
+ESP32-C5 通用板将 factory 应用分区设为 2 MiB，以容纳 BLE 5 固件；4 MiB
+Flash 板仍至少保留约 1.9 MiB 给自动创建的用户文件系统。
+
 已有构建目录的 `sdkconfig` 会优先于 SDK 默认值。首次测试请使用新构建目录，
 或者在已有配置中显式启用 `sdkconfig.ble5` 列出的选项。
 `ble.ble5_features()` 返回固件启用的 PHY 位掩码、扩展广播/周期广播开关、

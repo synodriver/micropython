@@ -24,7 +24,9 @@
  * THE SOFTWARE.
  */
 
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <time.h>
@@ -32,9 +34,12 @@
 #include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
+#include "esp_pm.h"
+#include "esp_sleep.h"
 #include "multi_heap.h"
 
 #include "py/nlr.h"
+#include "py/mperrno.h"
 #include "py/obj.h"
 #include "py/runtime.h"
 #include "py/mphal.h"
@@ -135,16 +140,49 @@ static mp_obj_t esp32_efuse_mac_get_custom(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(esp32_efuse_mac_get_custom_obj, esp32_efuse_mac_get_custom);
 
+static mp_obj_t esp32_pm_dump_locks(void) {
+    char *buffer = NULL;
+    size_t length = 0;
+    FILE *stream = open_memstream(&buffer, &length);
+    if (stream == NULL) {
+        mp_raise_OSError(errno);
+    }
+
+    esp_err_t err = esp_pm_dump_locks(stream);
+    int stream_error = ferror(stream);
+    int close_error = fclose(stream);
+    if (err != ESP_OK || stream_error || close_error != 0) {
+        free(buffer);
+        if (err != ESP_OK) {
+            check_esp_err(err);
+        }
+        mp_raise_OSError(MP_EIO);
+    }
+
+    // A MicroPython allocation can raise, so free the libc buffer on either path.
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        mp_obj_t result = mp_obj_new_str(buffer, length);
+        nlr_pop();
+        free(buffer);
+        return result;
+    }
+    free(buffer);
+    nlr_jump(nlr.ret_val);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(esp32_pm_dump_locks_obj, esp32_pm_dump_locks);
+
 #if SOC_TOUCH_SENSOR_SUPPORTED
 static mp_obj_t esp32_wake_on_touch(const mp_obj_t wake) {
-
+    machine_rtc_config_t config = machine_rtc_config;
+    config.wake_on_touch = mp_obj_is_true(wake);
     #if SOC_PM_SUPPORT_EXT0_WAKEUP
-    if (machine_rtc_config.ext0_pin != -1 || machine_rtc_config.gpio_pins != 0) {
+    if (config.wake_on_touch && (config.ext0_pin != -1 || config.gpio_pins != 0)) {
         mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
     }
     #endif
 
-    machine_rtc_config.wake_on_touch = mp_obj_is_true(wake);
+    machine_sleep_set_config(&config);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(esp32_wake_on_touch_obj, esp32_wake_on_touch);
@@ -152,35 +190,33 @@ static MP_DEFINE_CONST_FUN_OBJ_1(esp32_wake_on_touch_obj, esp32_wake_on_touch);
 
 #if SOC_PM_SUPPORT_EXT0_WAKEUP
 static mp_obj_t esp32_wake_on_ext0(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-
-    #if SOC_TOUCH_SENSOR_SUPPORTED
-    if (machine_rtc_config.wake_on_touch) {
-        mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
-    }
-    #endif
+    machine_rtc_config_t config = machine_rtc_config;
 
     enum {ARG_pin, ARG_level};
     const mp_arg_t allowed_args[] = {
-        { MP_QSTR_pin,  MP_ARG_OBJ, {.u_obj = mp_obj_new_int(machine_rtc_config.ext0_pin)} },
+        { MP_QSTR_pin,  MP_ARG_OBJ, {.u_obj = config.ext0_pin == -1 ? mp_const_none : MP_OBJ_NEW_SMALL_INT(config.ext0_pin)} },
         { MP_QSTR_level,  MP_ARG_BOOL, {.u_bool = machine_rtc_config.ext0_level} },
     };
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
 
     if (args[ARG_pin].u_obj == mp_const_none) {
-        machine_rtc_config.ext0_pin = -1; // "None"
+        config.ext0_pin = -1;
     } else {
         gpio_num_t pin_id = machine_pin_get_id(args[ARG_pin].u_obj);
-        if (pin_id != machine_rtc_config.ext0_pin) {
-            if (!RTC_IS_VALID_EXT_PIN(pin_id)) {
-                mp_raise_ValueError(MP_ERROR_TEXT("invalid pin"));
-            }
-            machine_rtc_config.ext0_pin = pin_id;
+        if (!esp_sleep_is_valid_wakeup_gpio(pin_id)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("invalid pin"));
         }
+        config.ext0_pin = pin_id;
     }
-
-    machine_rtc_config.ext0_level = args[ARG_level].u_bool;
-    machine_rtc_config.ext0_wake_types = MACHINE_WAKE_SLEEP | MACHINE_WAKE_DEEPSLEEP;
+    #if SOC_TOUCH_SENSOR_SUPPORTED
+    if (config.ext0_pin != -1 && config.wake_on_touch) {
+        mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
+    }
+    #endif
+    config.ext0_level = args[ARG_level].u_bool;
+    config.ext0_wake_types = MACHINE_WAKE_SLEEP | MACHINE_WAKE_DEEPSLEEP;
+    machine_sleep_set_config(&config);
 
     return mp_const_none;
 }
@@ -209,16 +245,17 @@ static mp_obj_t esp32_wake_on_ext1(size_t n_args, const mp_obj_t *pos_args, mp_m
         for (int i = 0; i < len; i++) {
 
             gpio_num_t pin_id = machine_pin_get_id(elem[i]);
-            if (!RTC_IS_VALID_EXT_PIN(pin_id)) {
+            if (!esp_sleep_is_valid_wakeup_gpio(pin_id)) {
                 mp_raise_ValueError(MP_ERROR_TEXT("invalid pin"));
-                break;
             }
             ext1_pins |= (1ll << pin_id);
         }
     }
 
-    machine_rtc_config.ext1_level = args[ARG_level].u_bool;
-    machine_rtc_config.ext1_pins = ext1_pins;
+    machine_rtc_config_t config = machine_rtc_config;
+    config.ext1_level = args[ARG_level].u_bool;
+    config.ext1_pins = ext1_pins;
+    machine_sleep_set_config(&config);
 
     return mp_const_none;
 }
@@ -227,12 +264,14 @@ static MP_DEFINE_CONST_FUN_OBJ_KW(esp32_wake_on_ext1_obj, 0, esp32_wake_on_ext1)
 
 #if SOC_ULP_SUPPORTED
 static mp_obj_t esp32_wake_on_ulp(const mp_obj_t wake) {
+    machine_rtc_config_t config = machine_rtc_config;
+    config.wake_on_ulp = mp_obj_is_true(wake);
     #if SOC_PM_SUPPORT_EXT0_WAKEUP
-    if (machine_rtc_config.ext0_pin != -1 || machine_rtc_config.gpio_pins != 0) {
+    if (config.wake_on_ulp && (config.ext0_pin != -1 || config.gpio_pins != 0)) {
         mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
     }
     #endif
-    machine_rtc_config.wake_on_ulp = mp_obj_is_true(wake);
+    machine_sleep_set_config(&config);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(esp32_wake_on_ulp_obj, esp32_wake_on_ulp);
@@ -247,18 +286,6 @@ static mp_obj_t esp32_wake_on_gpio(size_t n_args, const mp_obj_t *pos_args, mp_m
     mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
     mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
     uint64_t gpio_pins = machine_rtc_config.gpio_pins;
-
-    #if SOC_ULP_SUPPORTED
-    if (machine_rtc_config.wake_on_ulp) {
-        mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
-    }
-    #endif
-
-    #if SOC_TOUCH_SENSOR_SUPPORTED
-    if (machine_rtc_config.wake_on_touch) {
-        mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
-    }
-    #endif
 
     // Check that all pins are allowed
     if (args[ARG_pins].u_obj != mp_const_none) {
@@ -276,8 +303,20 @@ static mp_obj_t esp32_wake_on_gpio(size_t n_args, const mp_obj_t *pos_args, mp_m
         }
     }
 
-    machine_rtc_config.gpio_level = args[ARG_level].u_bool;
-    machine_rtc_config.gpio_pins = gpio_pins;
+    machine_rtc_config_t config = machine_rtc_config;
+    #if SOC_ULP_SUPPORTED
+    if (gpio_pins && config.wake_on_ulp) {
+        mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
+    }
+    #endif
+    #if SOC_TOUCH_SENSOR_SUPPORTED
+    if (gpio_pins && config.wake_on_touch) {
+        mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
+    }
+    #endif
+    config.gpio_level = args[ARG_level].u_bool;
+    config.gpio_pins = gpio_pins;
+    machine_sleep_set_config(&config);
 
     return mp_const_none;
 }
@@ -411,6 +450,7 @@ static const mp_rom_map_elem_t esp32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_derive_local_mac), MP_ROM_PTR(&esp32_derive_local_mac_obj) },
     { MP_ROM_QSTR(MP_QSTR_efuse_mac_get_default), MP_ROM_PTR(&esp32_efuse_mac_get_default_obj) },
     { MP_ROM_QSTR(MP_QSTR_efuse_mac_get_custom), MP_ROM_PTR(&esp32_efuse_mac_get_custom_obj) },
+    { MP_ROM_QSTR(MP_QSTR_pm_dump_locks), MP_ROM_PTR(&esp32_pm_dump_locks_obj) },
 
     #if SOC_TOUCH_SENSOR_SUPPORTED
     { MP_ROM_QSTR(MP_QSTR_wake_on_touch), MP_ROM_PTR(&esp32_wake_on_touch_obj) },

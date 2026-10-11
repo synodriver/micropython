@@ -27,6 +27,8 @@ typedef unsigned long long size_t;
 typedef void *mp_obj_t;
 typedef int esp_err_t;
 typedef int bool;
+typedef struct { int unused; } FILE;
+typedef struct { void *ret_val; } nlr_buf_t;
 typedef bool (*skip_light_sleep_cb_t)(void);
 #define true 1
 #define false 0
@@ -34,8 +36,8 @@ typedef bool (*skip_light_sleep_cb_t)(void);
 #define ESP_OK 0
 #define ESP_ERR_NOT_SUPPORTED 0x106
 #define ESP_ERR_INVALID_STATE 0x103
+#define MP_EIO 5
 #define TU_ATTR_FAST_FUNC
-#define MICROPY_HW_UART_REPL 0
 #define MP_ERROR_TEXT(x) x
 #define MP_THREAD_GIL_EXIT() fake_gil(0)
 #define MP_THREAD_GIL_ENTER() fake_gil(1)
@@ -60,6 +62,16 @@ mp_int_t mp_obj_get_int(mp_obj_t);
 bool mp_obj_is_true(mp_obj_t);
 void mp_raise_ValueError(const char *);
 void check_esp_err(esp_err_t);
+void mp_raise_OSError(int);
+mp_obj_t mp_obj_new_str(const char *, size_t);
+FILE *open_memstream(char **, size_t *);
+int ferror(FILE *);
+int fclose(FILE *);
+void free(void *);
+unsigned int nlr_push(nlr_buf_t *);
+void nlr_pop(void);
+void nlr_jump(void *);
+int errno;
 void fake_gil(int);
 void fake_wfi(void);
 void mp_handle_pending(int);
@@ -74,6 +86,13 @@ bool usb_serial_jtag_connected(void);
 esp_err_t mp_hal_prepare_auto_lightsleep(void);
 esp_err_t uart_stdout_set_wakeup(bool);
 void esp32_tud_event_hook_cb(uint8_t, uint32_t, bool);
+typedef int machine_rtc_config_t;
+machine_rtc_config_t machine_rtc_config;
+#define MACHINE_WAKE_SLEEP 2
+esp_err_t machine_sleep_lock(void);
+void machine_sleep_unlock(void);
+void machine_sleep_clear(void);
+esp_err_t machine_sleep_apply(const machine_rtc_config_t *, int, bool);
 """
 
 
@@ -115,7 +134,7 @@ def main():
     sdk = declarations(
         parser,
         sdk_header("components/esp_pm/include/esp_pm.h"),
-        ("esp_pm_config_t", "esp_pm_configure", "esp_pm_get_configuration"),
+        ("esp_pm_config_t", "esp_pm_configure", "esp_pm_get_configuration", "esp_pm_dump_locks"),
     ) + declarations(
         parser,
         sdk_header("components/esp_pm/include/esp_private/pm_impl.h"),
@@ -141,6 +160,7 @@ def main():
         sdk_header("components/esp_hw_support/include/esp_sleep.h"),
         ("esp_sleep_source_t", "esp_sleep_enable_uart_wakeup", "esp_sleep_disable_wakeup_source"),
     )
+    sdk += sdk_header("components/esp_common/include/esp_idf_version.h")
     dcd = (options.tinyusb / "src/device/dcd.h").read_text(encoding="utf-8")
     sdk += declarations(parser, dcd, ("dcd_eventid_t",))
     functions = {
@@ -149,6 +169,7 @@ def main():
             "mp_machine_set_freq",
             "machine_disable_auto_lightsleep",
         ),
+        "modesp32.c": ("esp32_pm_dump_locks",),
         "mphalport.c": (
             "mp_hal_usb_active",
             "mp_hal_prepare_auto_lightsleep",
@@ -201,6 +222,7 @@ def main():
                         "MICROPY_HW_ENABLE_USBDEV " + str(usb),
                         "MICROPY_HW_ESP_USB_SERIAL_JTAG " + str(usj),
                         "MICROPY_HW_ENABLE_UART_REPL " + str(uart),
+                        "MICROPY_HW_UART_REPL " + str(int(usj and uart)),
                         "CONFIG_FREERTOS_USE_TICKLESS_IDLE " + str(tickless),
                         "CONFIG_ESP_TIMER_IN_IRAM " + str(timer_iram),
                         "CONFIG_PM_ENABLE 1",

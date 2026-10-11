@@ -161,6 +161,20 @@ neither the complete MAC-48 nor the complete EUI-64. Use the direct eFuse
 functions above when the complete address is needed. Changes to the SDK MAC
 table do not affect the identifier.
 
+.. function:: pm_dump_locks()
+
+    Return the ESP-IDF power-management lock dump as a string. For example,
+    ``print(esp32.pm_dump_locks())`` shows each created lock's name, type,
+    argument and current ``Active`` count. An active ``ESP_PM_NO_LIGHT_SLEEP``
+    lock prevents automatic light sleep. This works without
+    ``CONFIG_PM_PROFILING``; cumulative hold counts and durations require that
+    separate SDK option. If power management is disabled, an ``OSError`` is
+    raised.
+
+    The output is diagnostic rather than an atomic snapshot: lock counts may
+    change while it is produced. It does not show every reason sleep may be
+    skipped, such as a busy task or a USB skip-sleep callback.
+
 .. function:: wake_on_touch(wake)
 
     Configure whether or not a touch will wake the device from sleep.
@@ -174,6 +188,12 @@ table do not affect the identifier.
     device from sleep. *wake* should be a boolean value.
 
     .. note:: This is only available for boards that have ULP coprocessor support.
+
+    Automatic light sleep supports FSM ULP wakeup. RISC-V/LP-core ULP wakeup
+    requires manual sleep: the supported IDF versions cannot individually
+    disable all its triggers without clearing other drivers' wakeup sources.
+    Enabling automatic sleep with this configuration, or enabling ULP wakeup
+    while automatic sleep is active, raises ``OSError(EOPNOTSUPP)``.
 
 .. function:: wake_on_ext0(pin, level)
 
@@ -199,6 +219,29 @@ table do not affect the identifier.
 
     .. note:: Some boards don't support waking on GPIO from deep sleep,
        on those boards, the pins set here can only be used to wake from light sleep.
+
+The EXT0, EXT1 and GPIO wakeup settings are applied by manual sleep and by
+automatic light sleep enabled through ``machine.freq(hz, True)``.  Changes made
+while automatic sleep is enabled take effect immediately.  Disabling automatic
+sleep preserves the settings for the next manual sleep or re-enable; a soft
+reset clears them.  Use ``wake_on_ext0(pin=None)`` or
+``wake_on_ext1(pins=[])`` / ``wake_on_gpio(pins=[])`` to remove a source.
+For EXT1 and GPIO, ``pins=None`` keeps the existing pin set.
+
+These functions configure level-based wakeup, not a Python interrupt callback.
+Normal ``Pin.irq`` edge interrupts do not automatically enable wakeup or prevent
+automatic light sleep.  GPIO wakeup shares the pin's interrupt trigger setting;
+applications must verify compatibility before using both on one pin.  EXT wakeup
+pins should be dedicated digital inputs, not shared with RTC peripherals or
+application-managed hold settings.  The port restores their digital function
+after light sleep.  Deep-sleep wakeup restarts the interpreter.
+Removing GPIO wakeup also restores its previous sleep input/output and selection
+settings.
+
+The name ``WAKEUP_ALL_LOW`` denotes all selected EXT1 pins low on the original
+ESP32; other EXT1 targets use any selected pin low.  GPIO wakeup uses any selected
+pin low.  Pin validity follows the target SDK.  On H2, GPIO8--14 can be used for
+external EXT1 wakeup; GPIO7 is not led out for this purpose.
 
 .. function:: gpio_deep_sleep_hold(enable)
 

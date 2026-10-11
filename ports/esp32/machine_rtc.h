@@ -29,6 +29,7 @@
 #define MICROPY_INCLUDED_ESP32_MACHINE_RTC_H
 
 #include "modmachine.h"
+#include "esp_err.h"
 
 typedef struct {
     #if SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -55,6 +56,16 @@ typedef struct {
 } machine_rtc_config_t;
 
 extern machine_rtc_config_t machine_rtc_config;
+
+// Wakeup configuration changes are serialized by the VM GIL. The temporary PM
+// lock protects SDK updates from automatic sleep, not ordinary GPIO IRQs.
+esp_err_t machine_sleep_lock(void);
+void machine_sleep_unlock(void);
+esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wake_type, bool automatic);
+void machine_sleep_clear(void);
+void machine_sleep_restore_pins(void);
+void machine_sleep_set_config(const machine_rtc_config_t *config);
+void machine_sleep_deinit(void);
 
 // User backup memory buffer, shared with machine.mem_backup on esp32.
 extern uint8_t rtc_user_mem_data[MICROPY_HW_RTC_USER_MEM_MAX];

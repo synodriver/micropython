@@ -42,6 +42,7 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 # Power Management. These options are independent of BLE/BLE 5; they enable
 # the ESP-IDF automatic light-sleep mechanism used by machine.freq(hz, True).
 CONFIG_PM_ENABLE=y
+CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 CONFIG_ESP_TIMER_IN_IRAM=y
 

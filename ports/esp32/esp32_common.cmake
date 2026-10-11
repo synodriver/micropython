@@ -151,6 +151,7 @@ list(APPEND MICROPY_SOURCE_PORT
     machine_hw_spi.c
     mpthreadport.c
     machine_rtc.c
+    machine_sleep.c
     machine_sdcard.c
     modespnow.c
     modsmartconfig.c

@@ -139,32 +139,58 @@ static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
     if (light_sleep_enable) {
         check_esp_err(mp_hal_prepare_auto_lightsleep());
     }
+    bool was_enabled = auto_lightsleep_enabled;
+    bool update_sleep = light_sleep_enable || was_enabled;
+    if (update_sleep) {
+        check_esp_err(machine_sleep_lock());
+    }
+    esp_err_t ret = ESP_OK;
+    if (light_sleep_enable && !was_enabled) {
+        ret = machine_sleep_apply(&machine_rtc_config, MACHINE_WAKE_SLEEP, true);
+    }
     #if MICROPY_HW_ENABLE_UART_REPL
-    if (light_sleep_enable && !auto_lightsleep_enabled) {
-        check_esp_err(uart_stdout_set_wakeup(true));
+    if (ret == ESP_OK && light_sleep_enable && !was_enabled) {
+        ret = uart_stdout_set_wakeup(true);
     }
     #endif
-    esp_err_t ret = esp_pm_configure(&pm);
     if (ret != ESP_OK) {
+        machine_sleep_clear();
+        if (update_sleep) {
+            machine_sleep_unlock();
+        }
+        check_esp_err(ret);
+    }
+    ret = esp_pm_configure(&pm);
+    if (ret != ESP_OK) {
+        if (light_sleep_enable && !was_enabled) {
+            machine_sleep_clear();
+        }
         #if MICROPY_HW_ENABLE_UART_REPL
-        if (light_sleep_enable && !auto_lightsleep_enabled) {
+        if (light_sleep_enable && !was_enabled) {
             uart_stdout_set_wakeup(false);
         }
         #endif
+        if (update_sleep) {
+            machine_sleep_unlock();
+        }
         if (light_sleep_enable && ret == ESP_ERR_NOT_SUPPORTED) {
             mp_raise_ValueError(MP_ERROR_TEXT("automatic light sleep requires PM and tickless idle"));
         }
         mp_raise_ValueError(NULL);
     }
-    bool was_enabled = auto_lightsleep_enabled;
     auto_lightsleep_enabled = light_sleep_enable;
+    if (!light_sleep_enable && was_enabled) {
+        machine_sleep_clear();
+    }
     #if MICROPY_HW_ENABLE_UART_REPL
     if (!light_sleep_enable && was_enabled) {
-        check_esp_err(uart_stdout_set_wakeup(false));
+        ret = uart_stdout_set_wakeup(false);
     }
-    #else
-    (void)was_enabled;
     #endif
+    if (update_sleep) {
+        machine_sleep_unlock();
+    }
+    check_esp_err(ret);
     while (esp_rom_get_cpu_ticks_per_us() != freq) {
         vTaskDelay(1);
     }
@@ -182,88 +208,37 @@ static void machine_sleep_helper(wake_type_t wake_type, size_t n_args, const mp_
     }
     #endif
 
-    // First, disable any previously set wake-up source
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-
-    // Set the expiry time of the sleep, if given.
+    mp_int_t expiry = 0;
     if (n_args != 0) {
-        mp_int_t expiry = mp_obj_get_int(args[0]);
-        esp_sleep_enable_timer_wakeup(((uint64_t)expiry) * 1000);
-    }
-
-    #if SOC_PM_SUPPORT_EXT0_WAKEUP
-    if (machine_rtc_config.ext0_pin != -1 && (machine_rtc_config.ext0_wake_types & wake_type)) {
-        esp_sleep_enable_ext0_wakeup(machine_rtc_config.ext0_pin, machine_rtc_config.ext0_level ? 1 : 0);
-    }
-    #endif
-
-    #if SOC_PM_SUPPORT_EXT1_WAKEUP
-    if (machine_rtc_config.ext1_pins != 0) {
-        esp_sleep_enable_ext1_wakeup(
-            machine_rtc_config.ext1_pins,
-            machine_rtc_config.ext1_level ? ESP_EXT1_WAKEUP_ANY_HIGH : ESP_EXT1_WAKEUP_ALL_LOW);
-    }
-    #endif
-
-    #if SOC_TOUCH_SENSOR_SUPPORTED
-    if (machine_rtc_config.wake_on_touch) {
-        if (esp_sleep_enable_touchpad_wakeup() != ESP_OK) {
-            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("esp_sleep_enable_touchpad_wakeup() failed"));
+        expiry = mp_obj_get_int(args[0]);
+        if (expiry < 0) {
+            mp_raise_ValueError(MP_ERROR_TEXT("sleep duration must be non-negative"));
         }
     }
-    #endif
-
-    #if SOC_ULP_SUPPORTED
-    if (machine_rtc_config.wake_on_ulp) {
-        if (esp_sleep_enable_ulp_wakeup() != ESP_OK) {
-            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("esp_sleep_enable_ulp_wakeup() failed"));
-        }
+    machine_sleep_clear();
+    check_esp_err(esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL));
+    esp_err_t err = machine_sleep_apply(&machine_rtc_config, wake_type, false);
+    if (err == ESP_OK && n_args != 0) {
+        err = esp_sleep_enable_timer_wakeup((uint64_t)expiry * 1000);
     }
-    #endif
-
-    if (machine_rtc_config.gpio_pins != 0) {
-        #if !SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-        if (MACHINE_WAKE_DEEPSLEEP == wake_type) {
-            mp_raise_ValueError(MP_ERROR_TEXT("DEEPSLEEP with gpio pins not supported on this chip"));
-        }
-        #endif
-
-        gpio_int_type_t intr_type = machine_rtc_config.gpio_level ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL;
-
-        for (int i = 0; i < GPIO_NUM_MAX; ++i) {
-            gpio_num_t gpio = (gpio_num_t)i;
-            uint64_t bm = 1ULL << i;
-
-            if (machine_rtc_config.gpio_pins & bm) {
-                gpio_sleep_set_direction(gpio, GPIO_MODE_INPUT);
-
-                if (MACHINE_WAKE_SLEEP == wake_type) {
-                    gpio_wakeup_enable(gpio, intr_type);
-                }
-            }
-        }
-
-        if (MACHINE_WAKE_DEEPSLEEP == wake_type) {
-            #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-            if (ESP_OK != esp_deep_sleep_enable_gpio_wakeup(
-                machine_rtc_config.gpio_pins,
-                machine_rtc_config.gpio_level ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW)) {
-                mp_raise_ValueError(MP_ERROR_TEXT("wake-up pin not supported"));
-            }
-            #endif
-        } else {
-            esp_sleep_enable_gpio_wakeup();
-        }
-    }
-
-    switch (wake_type) {
-        case MACHINE_WAKE_SLEEP:
-            esp_light_sleep_start();
-            break;
-        case MACHINE_WAKE_DEEPSLEEP:
+    if (err == ESP_OK) {
+        if (wake_type == MACHINE_WAKE_DEEPSLEEP) {
             esp_deep_sleep_start();
-            break;
+        } else {
+            err = esp_light_sleep_start();
+            machine_sleep_restore_pins();
+            // An already asserted wake level, or a duration shorter than the
+            // entry overhead, is a normal early return from manual light sleep.
+            if (err == ESP_ERR_SLEEP_REJECT || err == ESP_ERR_SLEEP_TOO_SHORT_SLEEP_DURATION) {
+                err = ESP_OK;
+            }
+        }
     }
+    // Manual sleep owns all SDK sources for this call. In particular, IDF's
+    // per-source disable cannot clear RISC-V/LP-core ULP wakeup triggers.
+    esp_err_t clear_err = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    machine_sleep_clear();
+    check_esp_err(err != ESP_OK ? err : clear_err);
 }
 
 static void mp_machine_lightsleep(size_t n_args, const mp_obj_t *args) {
@@ -347,12 +322,14 @@ void machine_init(void) {
 
 void machine_deinit(void) {
     machine_disable_auto_lightsleep();
+    machine_sleep_deinit();
     // we are doing a soft-reset so change the reset_cause
     is_soft_reset = 1;
 }
 
 void machine_disable_auto_lightsleep(void) {
     if (auto_lightsleep_enabled) {
+        ESP_ERROR_CHECK(machine_sleep_lock());
         esp_pm_config_t pm;
         ESP_ERROR_CHECK(esp_pm_get_configuration(&pm));
         pm.light_sleep_enable = false;
@@ -361,6 +338,8 @@ void machine_disable_auto_lightsleep(void) {
         ESP_ERROR_CHECK(uart_stdout_set_wakeup(false));
         #endif
         auto_lightsleep_enabled = false;
+        machine_sleep_clear();
+        machine_sleep_unlock();
     }
 }
 

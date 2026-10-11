@@ -31,6 +31,7 @@
 
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "esp_sleep.h"
 #include "hal/gpio_ll.h"
 
 #include "py/runtime.h"
@@ -353,10 +354,16 @@ static mp_obj_t machine_pin_irq(size_t n_args, const mp_obj_t *pos_args, mp_map_
         uint32_t trigger = args[ARG_trigger].u_int;
         mp_obj_t wake_obj = args[ARG_wake].u_obj;
 
-        if ((trigger == GPIO_INTR_LOW_LEVEL || trigger == GPIO_INTR_HIGH_LEVEL) && wake_obj != mp_const_none) {
+        if (wake_obj != mp_const_none) {
+            if (trigger != GPIO_INTR_LOW_LEVEL && trigger != GPIO_INTR_HIGH_LEVEL) {
+                mp_raise_ValueError(MP_ERROR_TEXT("wake requires Pin.WAKE_LOW or Pin.WAKE_HIGH"));
+            }
+            #if !SOC_PM_SUPPORT_EXT0_WAKEUP
+            mp_raise_ValueError(MP_ERROR_TEXT("Pin.irq wake requires EXT0; use esp32.wake_on_ext1 or wake_on_gpio"));
+            #else
             mp_int_t wake;
             if (mp_obj_get_int_maybe(wake_obj, &wake)) {
-                if (wake < 2 || wake > 7) {
+                if (wake == 0 || (wake & ~(MACHINE_WAKE_SLEEP | MACHINE_WAKE_DEEPSLEEP))) {
                     mp_raise_ValueError(MP_ERROR_TEXT("bad wake value"));
                 }
             } else {
@@ -369,24 +376,25 @@ static mp_obj_t machine_pin_irq(size_t n_args, const mp_obj_t *pos_args, mp_map_
             }
             #endif
 
-            if (!RTC_IS_VALID_EXT_PIN(index)) {
+            if (!esp_sleep_is_valid_wakeup_gpio(index)) {
                 mp_raise_ValueError(MP_ERROR_TEXT("invalid pin for wake"));
             }
 
-            #if SOC_PM_SUPPORT_EXT0_WAKEUP
-            if (machine_rtc_config.ext0_pin == -1) {
-                machine_rtc_config.ext0_pin = index;
-            } else if (machine_rtc_config.ext0_pin != index) {
+            machine_rtc_config_t config = machine_rtc_config;
+            if (config.ext0_pin != -1 && config.ext0_pin != index) {
                 mp_raise_ValueError(MP_ERROR_TEXT("no resources"));
             }
-
-            machine_rtc_config.ext0_level = trigger == GPIO_INTR_LOW_LEVEL ? 0 : 1;
-            machine_rtc_config.ext0_wake_types = wake;
+            config.ext0_pin = index;
+            config.ext0_level = trigger == GPIO_INTR_LOW_LEVEL ? 0 : 1;
+            config.ext0_wake_types = wake;
+            machine_sleep_set_config(&config);
             #endif
         } else {
             #if SOC_PM_SUPPORT_EXT0_WAKEUP
             if (machine_rtc_config.ext0_pin == index) {
-                machine_rtc_config.ext0_pin = -1;
+                machine_rtc_config_t config = machine_rtc_config;
+                config.ext0_pin = -1;
+                machine_sleep_set_config(&config);
             }
             #endif
 

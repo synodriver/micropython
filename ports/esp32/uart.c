@@ -35,6 +35,7 @@
 
 #include <stdio.h>
 #include "driver/uart.h" // For uart_get_sclk_freq()
+#include "esp_idf_version.h"
 #include "esp_sleep.h"
 #include "hal/uart_hal.h"
 #include "soc/uart_periph.h"
@@ -99,9 +100,14 @@ esp_err_t uart_stdout_set_wakeup(bool enable) {
         }
         return esp_sleep_enable_uart_wakeup(MICROPY_HW_UART_REPL);
     }
-    // IDF disables UART wakeup as a group using ESP_SLEEP_WAKEUP_UART;
-    // ESP_SLEEP_WAKEUP_UART1/2 are wakeup causes, not accepted selectors.
-    esp_err_t ret = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_UART);
+    #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 1, 0)
+    // From IDF 6.1, the UART wakeup selectors are consecutive, per-UART values.
+    esp_sleep_source_t source = (esp_sleep_source_t)(ESP_SLEEP_WAKEUP_UART0 + MICROPY_HW_UART_REPL);
+    #else
+    // Earlier versions only accept the selector which disables UARTs as a group.
+    esp_sleep_source_t source = ESP_SLEEP_WAKEUP_UART;
+    #endif
+    esp_err_t ret = esp_sleep_disable_wakeup_source(source);
     return ret == ESP_ERR_INVALID_STATE ? ESP_OK : ret;
 }
 

@@ -56,6 +56,13 @@ USB Serial/JTAG 的全局休眠检查还需要 `CONFIG_ESP_TIMER_IN_IRAM=y`（�
 驱动持有阻止休眠的 PM 锁时，IDF 才会自动休眠。忙循环、活动的硬件定时器、持续
 扫描以及其他线程都可能阻止休眠。无需循环调用 `machine.lightsleep()`。
 
+可以用 `print(esp32.pm_dump_locks())` 查看当前 PM 锁的名称、类型、参数及 `Active`
+计数；返回值是字符串，便于保存或自行分析。`ESP_PM_NO_LIGHT_SLEEP` 类型的锁在
+`Active` 非零时阻止自动 light sleep。此接口无需启用 `CONFIG_PM_PROFILING`，因此
+默认不提供累计持有次数或持有时间；未启用 `CONFIG_PM_ENABLE` 时抛 `OSError`。
+锁计数可能在输出过程中变化；忙任务、USB skip-sleep 回调等非 PM 锁原因不会列在
+这里，不能仅凭所有 `Active` 为零就断言设备必然进入休眠。
+
 `time.sleep_ms()` 和 asyncio 的事件等待在开启时可以阻塞多个 tick，每次最多
 100 ms。等待仍会响应任务通知和待执行回调；BLE 同步 IRQ 结束后会通知主任务，
 因此 aioble 的 `ThreadSafeFlag` 可以及时唤醒事件循环。没有任务通知的自定义
@@ -102,6 +109,66 @@ machine.freq(machine.freq(), False)
 machine.lightsleep(1000)
 ```
 
+## GPIO 与 Pin.irq 唤醒
+
+`esp32.wake_on_ext0()`、`wake_on_ext1()`、`wake_on_gpio()` 的配置同时适用于手动休眠
+和自动 light sleep。先配置再调用 `machine.freq(hz, True)`，或者在自动模式开启后
+更新配置，均可生效。关闭自动模式时撤销它安装的唤醒源，保留 Python 侧配置供下次
+启用或手动休眠使用；软复位会清空这些配置。动态更新失败会恢复旧配置；如果恢复也
+失败，会关闭自动模式并抛异常，避免在缺少预期唤醒源时继续休眠。
+
+例如 ESP32-H2 使用空闲 GPIO8，外部下拉，拉高唤醒：
+
+```python
+import esp32
+import machine
+import time
+from machine import Pin
+
+p = Pin(8, Pin.IN)  # 此例用于 H2；请确认板上引脚空闲并连接外部下拉
+esp32.wake_on_ext1(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
+machine.freq(machine.freq(), True)
+time.sleep_ms(1000)
+esp32.wake_on_ext1(pins=[])  # 取消 EXT1 唤醒
+machine.freq(machine.freq(), False)
+```
+
+GPIO 唤醒可以提前唤醒 CPU；`time.sleep_ms()` 仍等待原定截止时间，不会因 GPIO 唤醒
+直接提前结束，也不会自动产生 Python 回调。低电平唤醒使用 `WAKEUP_ALL_LOW` 常量，
+其中经典 ESP32 的 EXT1 表示所有所选引脚都低，其他支持 EXT1 的目标表示任一所选
+引脚低。GPIO 路径的低电平条件同样是任一所选引脚低。
+
+- `Pin.irq(trigger=Pin.WAKE_LOW/WAKE_HIGH, wake=machine.SLEEP)` 保留 EXT0 语义，
+  限经典 ESP32、S2、S3 的有效 RTC 引脚；加入 `machine.DEEPSLEEP` 可同时配置深睡唤醒。
+  只指定 `DEEPSLEEP` 不会安装为自动 light-sleep 唤醒源。
+- H2/C2/C3/C5/C6/P4 的 `Pin.irq(wake=...)` 明确抛 `ValueError`。有 EXT1 的目标使用
+  `esp32.wake_on_ext1()`；C2/C3 使用 `wake_on_gpio()`。deep sleep 仅允许相应 SDK
+  支持的引脚。H2 的 EXT1 外部唤醒可用 GPIO8～14，GPIO7 未引出用于外部唤醒。
+- 普通 `IRQ_RISING/IRQ_FALLING` 不会自动配置睡眠唤醒；与非 `None` 的 `wake` 参数
+  组合会报错。`Pin.irq` 的显式唤醒分支不注册传入的 handler。
+- **没有加入普通 GPIO IRQ 阻止自动休眠的保护。** 使用者应自行确认 IRQ 与休眠兼容。
+  GPIO 唤醒会共用中断类型寄存器，将其改成高/低电平；同一引脚同时注册普通 IRQ
+  可能造成触发语义变化、重复中断或丢失边沿。撤销唤醒时，只在中断类型仍等于本功能
+  设置的值时恢复旧值，避免覆盖应用后来设置的不同类型。不要依赖捕获任意窄脉冲。
+  撤销、关闭或安装失败时，也恢复安装前的 GPIO 休眠输入/输出及 sleep selection 状态。
+- EXT0/EXT1 醒后恢复数字引脚复用并释放睡眠保持；唤醒引脚应作为专用数字输入使用，
+  不与 ADC、Touch、ULP、其他外设或应用自己的保持配置共用。同一引脚同时配置
+  RTC 唤醒和 GPIO 唤醒会在应用配置时被拒绝。
+- EXT0 用 `pin=None` 取消；EXT1/GPIO 用 `pins=[]` 取消，`pins=None` 保持原引脚集合。
+  配置和进入睡眠时的 SDK 错误会抛异常；已满足唤醒电平或手动休眠时间过短则正常返回。
+  deep sleep 醒后重新启动，原 Python 对象和 IRQ handler 不恢复。
+
+自动 EXT0/EXT1 恢复需要 `CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y`，已加入 `sdkconfig.base`；
+已有构建目录需更新最终 sdkconfig。关闭此项的自定义构建仍可自动休眠和使用 GPIO 唤醒，
+但配置自动 EXT 唤醒会抛 `OSError`。开启 `PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP`
+的自定义构建不能使用这里的普通 GPIO light-sleep 唤醒路径，应使用有效 EXT1 引脚。
+临时 PM 锁仅保护配置更新，不根据 IRQ 注册情况阻止日常自动休眠。
+
+`wake_on_ulp(True)` 的自动模式仅支持 FSM ULP。IDF 5.5～6.1 的逐源关闭接口不能完整
+撤销 RISC-V/LP-core ULP 唤醒，自动模式下这类配置抛 `OSError(EOPNOTSUPP)`；先配置
+再开启自动模式也会被拒绝。手动休眠仍支持这些 ULP 类型，并在返回或安装失败后清除
+本次 SDK 唤醒源。自动路径不会因此调用 `ESP_SLEEP_WAKEUP_ALL` 清除无线驱动配置。
+
 ## 验证
 
 `tests/ports/esp32/machine_auto_lightsleep.py` 验证可选参数、手动休眠保护、调度回调、
@@ -120,3 +187,19 @@ python ports/esp32/check_lightsleep.py --idf <IDF目录> --idf-tag v5.5.5 --tiny
 
 TinyUSB 源码需对应 lockfile 中的提交，目录下包含 `src/device/dcd.h`。该脚本只执行
 C 语法/类型检查，不构建固件，不验证射频、USB 实际枚举或控制器睡眠恢复。
+
+新增 GPIO/EXT 路径的静态检查：
+
+```text
+python ports/esp32/check_sleep_wakeup.py --idf <IDF目录> --idf-tag v5.5 --compiler <cl或gcc或clang>
+```
+
+`tests/ports/esp32/machine_sleep_wakeup.py` 覆盖参数拒绝、启用前后配置、冲突回滚及
+deep-sleep-only 配置隔离；运行前确认脚本选择的引脚未被板上外设占用。该测试不证明
+实际电流或物理唤醒成功。板上还需验证外部电平触发、取消/更换引脚后旧引脚不再唤醒、
+重复休眠后的数字输入、软复位清理，以及 BLE 连接期间 GPIO 唤醒。deep sleep 需单独
+验证重启原因和启动脚本，不能用 light-sleep 回归替代。
+
+`machine_sleep_gpio_restore.py` 在 ESP32-S3 空闲 GPIO4 上检查取消唤醒、关闭自动模式
+及手动休眠返回后的休眠输入/输出和 selection 恢复。它会临时修改该引脚的休眠寄存器
+并在退出时恢复，执行前需确认 GPIO4 未用于板上外设；尚未在设备上运行。

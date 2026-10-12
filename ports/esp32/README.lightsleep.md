@@ -178,6 +178,87 @@ machine.lightsleep(1000)
 
 ## GPIO 与 Pin.irq 唤醒
 
+### 普通 Pin.irq：运行期间和自动休眠期间共用 handler
+
+启用自动 light sleep 后，普通 `Pin.irq(handler=..., trigger=...)` 自动参与 GPIO
+唤醒，不需要再配置 `wake_on_ext*()`，也不要加 `wake=`。先注册 IRQ 再启用自动模式，
+或先启用再注册，均可；`pin.irq(handler=None)` 注销并取消该 IRQ 的自动唤醒。
+`pin.irq().trigger()` 返回用户设置的触发类型，setter 同样经过唤醒兼容性检查。
+
+| trigger | 自动模式下的行为 |
+| --- | --- |
+| `IRQ_RISING` / `IRQ_FALLING` / 二者按位或 | 运行时保留硬件边沿检测；入睡前暂时改成与当前电平相反的 GPIO 电平唤醒，醒后比较电平，并按订阅方向通知 |
+| `IRQ_LOW_LEVEL` / `IRQ_HIGH_LEVEL` | 每段**观察到的**有效电平通知一次，随后监测恢复无效电平，再允许下一次通知；注册时已有效也会通知 |
+
+电平常量也是现有 `WAKE_LOW` / `WAKE_HIGH` 的别名。持续按住按钮不会反复交付
+电平 callback；松开可产生一次内部唤醒，但只订阅按下方向的 handler 不会因此调用。
+这是一种电平有效区间通知语义，**不同于关闭自动休眠时原有的持续电平重复中断**。
+关闭自动模式后恢复用户的硬件 trigger。单参数 `machine.freq(hz)` 仍关闭自动模式。
+
+handler 保持 `handler(pin)` 签名，在 MicroPython 调度上下文中运行；硬件 ISR 和
+PM 回调只记录/调度事件，不执行 Python。使用静态调度节点，普通 Python 调度队列满
+时不会直接丢弃已记录的通知。同一引脚在交付前的多次事件合并，包括运行期间的事件。
+注销或重新配置 IRQ 会丢弃该引脚尚未交付的旧通知；异常由受保护的回调调用处理。
+
+例如 H2 上的空闲 GPIO8，按钮按下接地、使用外部上拉，和 asyncio 配合：
+
+```python
+import asyncio
+import machine
+from machine import Pin
+
+button = Pin(8, Pin.IN)  # H2 示例；确认板上未占用，并连接外部上拉
+changed = asyncio.ThreadSafeFlag()
+
+def button_irq(pin):
+    changed.set()
+
+async def main():
+    hz = machine.freq()
+    button.irq(handler=button_irq, trigger=Pin.IRQ_LOW_LEVEL)
+    try:
+        machine.freq(hz, hz, True)
+        while True:
+            await changed.wait()
+            print("按钮有效电平通知，当前电平:", button.value())
+            # 此处可以 await；应用按需要增加消抖与业务处理。
+    finally:
+        button.irq(handler=None)
+        machine.freq(hz)
+
+asyncio.run(main())
+```
+
+这里没有为了检测按下而进行的应用层定时轮询。`ThreadSafeFlag` 本身也合并通知；
+不能将通知次数当作物理按键次数或脉冲计数。callback 不是协程，不能直接 `await`，
+需要通过 flag 把处理交给协程。`time.sleep()` 等待中也可处理 callback，但不会因此
+提前结束原定延时；底层仍保留最长约 100 ms 的等待窗口，不代表设备只被按钮唤醒。
+
+**限制与配置冲突：**
+
+- 第一版仅使用数字 GPIO light-sleep 唤醒，要求数字 GPIO 电源域保留、
+  `CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y`。关闭回调或开启
+  `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP` 的构建，在存在普通 IRQ 时启用
+  自动模式，或在自动模式中注册 IRQ，会抛 `OSError(EOPNOTSUPP)`；没有自动回退 EXT1。
+- 引脚必须始终是有效的专用数字输入，电平稳定且满足硬件唤醒采样要求。不要与
+  Flash/PSRAM、USB、ADC、Touch、ULP、外设复用或应用自己的保持配置共用。注册后
+  不要用 `Pin.init()`、直接寄存器访问或其他驱动改变该引脚的用途。数字 GPIO 唤醒
+  不受 EXT0/EXT1 的 RTC 引脚集合限制，但仍须遵守具体芯片的 GPIO 硬件限制。
+- 自动模式下，同一引脚的普通 IRQ 与显式 `wake_on_ext0/ext1/gpio()` 睡眠唤醒配置
+  冲突会抛 `OSError`；先后两种配置顺序都检查，不覆盖原配置。不同引脚可共存，SDK
+  仍可能拒绝其他组合，例如经典 ESP32 的 GPIO 唤醒与 Touch/ULP 唤醒。
+- **不能保证捕获每个边沿或任意窄脉冲。** 睡前为高、醒后为低只表示至少发生过一次
+  下降变化；睡眠或交接期间若高→低→高，最终电平相同，可能完全不通知，即使短暂电平
+  曾唤醒 CPU。没有根据旧的 wake reason 伪造事件，也不从一次 GPIO 唤醒推断脉冲次数。
+- 回调可能合并；硬件 ISR 与恢复过程的交接、真实抖动也可能造成重复通知，不保证
+  每个物理事件恰好一次。电平释放后又迅速有效且释放未被观察到，也可能被合并。
+  此功能不提供消抖、精确计数、事件时间戳或硬实时响应；需要这些保证时应保持运行，
+  配合硬件计数/锁存功能。解释器长期阻塞时，callback 也会延迟。
+- 自动模式关闭时继续使用原普通 IRQ 调度路径，其有限 Python 队列仍可能溢出。
+  手动 light sleep 不使用这个适配机制；deep sleep 重启后不保留 handler。
+
+### 显式配置睡眠唤醒源
+
 `esp32.wake_on_ext0()`、`wake_on_ext1()`、`wake_on_gpio()` 的配置同时适用于手动休眠
 和自动 light sleep。先配置再调用 `machine.freq(hz, hz, True)`，或者在自动模式开启后
 更新配置，均可生效。关闭自动模式时撤销它安装的唤醒源，保留 Python 侧配置供下次
@@ -202,7 +283,7 @@ hz = machine.freq()
 machine.freq(hz, hz, False)
 ```
 
-GPIO 唤醒可以提前唤醒 CPU；`time.sleep_ms()` 仍等待原定截止时间，不会因 GPIO 唤醒
+显式 GPIO 唤醒可以提前唤醒 CPU；`time.sleep_ms()` 仍等待原定截止时间，不会因 GPIO 唤醒
 直接提前结束，也不会自动产生 Python 回调。低电平唤醒使用 `WAKEUP_ALL_LOW` 常量，
 其中经典 ESP32 的 EXT1 表示所有所选引脚都低，其他支持 EXT1 的目标表示任一所选
 引脚低。GPIO 路径的低电平条件同样是任一所选引脚低。
@@ -213,11 +294,11 @@ GPIO 唤醒可以提前唤醒 CPU；`time.sleep_ms()` 仍等待原定截止时�
 - H2/C2/C3/C5/C6/P4 的 `Pin.irq(wake=...)` 明确抛 `ValueError`。有 EXT1 的目标使用
   `esp32.wake_on_ext1()`；C2/C3 使用 `wake_on_gpio()`。deep sleep 仅允许相应 SDK
   支持的引脚。H2 的 EXT1 外部唤醒可用 GPIO8～14，GPIO7 未引出用于外部唤醒。
-- 普通 `IRQ_RISING/IRQ_FALLING` 不会自动配置睡眠唤醒；与非 `None` 的 `wake` 参数
-  组合会报错。`Pin.irq` 的显式唤醒分支不注册传入的 handler。
-- **没有加入普通 GPIO IRQ 阻止自动休眠的保护。** 使用者应自行确认 IRQ 与休眠兼容。
-  GPIO 唤醒会共用中断类型寄存器，将其改成高/低电平；同一引脚同时注册普通 IRQ
-  可能造成触发语义变化、重复中断或丢失边沿。撤销唤醒时，只在中断类型仍等于本功能
+- `IRQ_RISING/IRQ_FALLING` 与非 `None` 的 `wake` 参数组合仍会报错。
+  `Pin.irq` 的显式 `wake=` 分支保留原有 EXT0 语义，不注册传入的 handler；
+  上述普通 IRQ 自动唤醒使用的是不传 `wake=` 的分支。
+- GPIO 唤醒共用中断类型寄存器。同一引脚混用在自动模式下已明确拒绝；手动休眠
+  仍不提供普通 IRQ 兼容保证。撤销显式 GPIO 唤醒时，只在中断类型仍等于本功能
   设置的值时恢复旧值，避免覆盖应用后来设置的不同类型。不要依赖捕获任意窄脉冲。
   撤销、关闭或安装失败时，也恢复安装前的 GPIO 休眠输入/输出及 sleep selection 状态。
 - EXT0/EXT1 醒后恢复数字引脚复用并释放睡眠保持；唤醒引脚应作为专用数字输入使用，
@@ -239,6 +320,12 @@ GPIO 唤醒可以提前唤醒 CPU；`time.sleep_ms()` 仍等待原定截止时�
 本次 SDK 唤醒源。自动路径不会因此调用 `ESP_SLEEP_WAKEUP_ALL` 清除无线驱动配置。
 
 ## 验证
+
+`tests/ports/esp32/machine_auto_lightsleep_irq.py` 检查普通调度队列满时静态 IRQ 通知、
+事件合并、注销待处理事件、注册顺序、显式唤醒冲突回滚、trigger getter/setter 和
+asyncio flag。该用例用软件调用 IRQ 对象，不验证物理睡眠唤醒；选择的输入引脚需空闲。
+实机还需分别测试运行/睡眠时外部按下、长按和松开、双边沿、多引脚、短脉冲、抖动、
+快速重配、重复启停及软复位，并断开 USB 测电流。不能用该用例通过替代这些验证。
 
 `tests/ports/esp32/machine_auto_lightsleep.py` 验证可选参数、手动休眠保护、调度回调、
 等待截止时间，以及旧调用和显式关闭的兼容性，可通过项目的 `tests/run-tests.py`

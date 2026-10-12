@@ -344,6 +344,23 @@ end-user boards use their own adhoc pin numbering (marked e.g. D0, D1, ...).
 For mapping between board logical pins and physical chip pins consult your board
 documentation.
 
+With automatic light sleep enabled, a normal input ``Pin.irq(handler=...,
+trigger=...)`` also configures wakeup during idle sleep. Do not additionally
+configure an explicit sleep wakeup source on that pin. This requires PM sleep
+callbacks and a powered digital GPIO domain. Unsupported configurations raise
+``OSError``; no EXT1 fallback is performed.
+
+``Pin.IRQ_LOW_LEVEL`` and ``Pin.IRQ_HIGH_LEVEL`` are aliases of ``WAKE_LOW`` and
+``WAKE_HIGH``. In automatic mode they notify once per observed active interval,
+then wait for the inactive level before rearming. Edge IRQs retain hardware
+edge detection while running; while sleeping, notifications are inferred from
+sampled level changes. Short pulses may be missed and pending notifications
+coalesce. There is no exact edge-count or hard real-time guarantee. Handlers run
+in scheduler context and can set an ``asyncio.ThreadSafeFlag`` to notify a task.
+These changes apply to automatic light sleep only; disabling it restores normal
+IRQ behaviour. See ``ports/esp32/README.lightsleep.md`` for an asyncio example
+and the limitations of the sleep/IRQ handover.
+
 Four drive strengths are supported, using the ``drive`` keyword argument to the
 ``Pin()`` constructor or ``Pin.init()`` method, with different corresponding
 safe maximum source/sink currents and approximate internal driver resistances:

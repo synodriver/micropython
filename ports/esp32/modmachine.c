@@ -207,6 +207,7 @@ static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
     }
     auto_lightsleep_enabled = light_sleep_enable;
     if (!light_sleep_enable && was_enabled) {
+        machine_pin_irq_auto_disable();
         machine_sleep_clear();
     }
     #if MICROPY_HW_ENABLE_UART_REPL
@@ -365,6 +366,7 @@ void machine_disable_auto_lightsleep(void) {
         ESP_ERROR_CHECK(uart_stdout_set_wakeup(false));
         #endif
         auto_lightsleep_enabled = false;
+        machine_pin_irq_auto_disable();
         machine_sleep_clear();
         machine_sleep_unlock();
     }

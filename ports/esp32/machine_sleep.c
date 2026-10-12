@@ -70,6 +70,15 @@ void machine_sleep_restore_pins(void) {
 }
 
 #if CONFIG_PM_LIGHT_SLEEP_CALLBACKS
+static esp_err_t machine_sleep_enter(int64_t expected_us, void *arg) {
+    (void)expected_us;
+    (void)arg;
+    if (machine_auto_lightsleep_enabled()) {
+        machine_pin_irq_sleep_enter();
+    }
+    return ESP_OK;
+}
+
 // IDF invokes this after esp_light_sleep_start() has restored the cache. The
 // callback runs in the idle task, makes no Python calls and does not block.
 static esp_err_t machine_sleep_exit(int64_t slept_us, void *arg) {
@@ -77,9 +86,66 @@ static esp_err_t machine_sleep_exit(int64_t slept_us, void *arg) {
     if (slept_us > 0) {
         machine_sleep_restore_pins();
     }
+    // Entry callbacks also run when IDF subsequently skips/rejects sleep.
+    // Always undo the temporary GPIO interrupt/wakeup configuration.
+    machine_pin_irq_sleep_exit();
     return ESP_OK;
 }
 #endif
+
+uint32_t machine_sleep_gpio_config(int pin) {
+    #if CONFIG_IDF_TARGET_ESP32C5
+    // IDF 5.5.5 declares but does not define GPIO_PIN_MUX_REG for C5.
+    return (IO_MUX.gpio[pin].mcu_ie ? SLP_IE : 0)
+        | (IO_MUX.gpio[pin].mcu_oe ? SLP_OE : 0)
+        | (IO_MUX.gpio[pin].slp_sel ? SLP_SEL : 0);
+    #else
+    return REG_READ(GPIO_PIN_MUX_REG[pin]) & (SLP_IE | SLP_OE | SLP_SEL);
+    #endif
+}
+
+static esp_err_t machine_sleep_irq_validate(const machine_rtc_config_t *config, uint64_t pins) {
+    if (!pins) {
+        return ESP_OK;
+    }
+    #if !CONFIG_PM_LIGHT_SLEEP_CALLBACKS || CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
+    (void)config;
+    return ESP_ERR_NOT_SUPPORTED;
+    #else
+    uint64_t explicit_pins = config->gpio_pins;
+    #if SOC_PM_SUPPORT_EXT0_WAKEUP
+    if (config->ext0_pin != -1 && (config->ext0_wake_types & MACHINE_WAKE_SLEEP)) {
+        explicit_pins |= 1ULL << config->ext0_pin;
+    }
+    #endif
+    #if SOC_PM_SUPPORT_EXT1_WAKEUP
+    explicit_pins |= config->ext1_pins;
+    #endif
+    return (pins & explicit_pins) ? ESP_ERR_INVALID_ARG : ESP_OK;
+    #endif
+}
+
+esp_err_t machine_sleep_irq_update(uint64_t pins) {
+    esp_err_t err = machine_sleep_irq_validate(&machine_rtc_config, pins);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (pins || machine_rtc_config.gpio_pins) {
+        err = esp_sleep_enable_gpio_wakeup();
+        if (err == ESP_OK) {
+            installed_sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
+        }
+    } else if (installed_sources & (1U << ESP_SLEEP_WAKEUP_GPIO)) {
+        err = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+        if (err == ESP_ERR_INVALID_STATE) {
+            err = ESP_OK;
+        }
+        if (err == ESP_OK) {
+            installed_sources &= ~(1U << ESP_SLEEP_WAKEUP_GPIO);
+        }
+    }
+    return err;
+}
 
 void machine_sleep_clear(void) {
     // Also undo per-pin wake enables: disabling the global GPIO source alone
@@ -207,17 +273,7 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
             for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
                 if (config->gpio_pins & (1ULL << pin)) {
                     saved_irq_type[pin] = GPIO.pin[pin].int_type;
-                    #if CONFIG_IDF_TARGET_ESP32C5
-                    // ESP-IDF v5.5.5 declares GPIO_PIN_MUX_REG for C5 but does
-                    // not define its table in gpio_periph.c. Read the C5 IOMUX
-                    // register through the SDK's typed register structure.
-                    saved_sleep_config[pin] =
-                        (IO_MUX.gpio[pin].mcu_ie ? SLP_IE : 0)
-                        | (IO_MUX.gpio[pin].mcu_oe ? SLP_OE : 0)
-                        | (IO_MUX.gpio[pin].slp_sel ? SLP_SEL : 0);
-                    #else
-                    saved_sleep_config[pin] = REG_READ(GPIO_PIN_MUX_REG[pin]) & (SLP_IE | SLP_OE | SLP_SEL);
-                    #endif
+                    saved_sleep_config[pin] = machine_sleep_gpio_config(pin);
                     installed_gpio_pins |= 1ULL << pin;
                     err = gpio_sleep_set_direction(pin, GPIO_MODE_INPUT);
                     if (err == ESP_OK) {
@@ -243,6 +299,12 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
 // Failure leaves no partially installed sources. The caller can restore its
 // previous configuration before releasing the lock.
 esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wake_type, bool automatic) {
+    if (automatic) {
+        esp_err_t err = machine_sleep_irq_validate(config, machine_pin_irq_mask());
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
     #if SOC_ULP_SUPPORTED && (CONFIG_ULP_COPROC_TYPE_RISCV || CONFIG_ULP_COPROC_TYPE_LP_CORE)
     // IDF 5.5/6.x cannot individually disable these ULP trigger bits. Automatic
     // updates must not use WAKEUP_ALL, which would also remove radio wakeups.
@@ -265,12 +327,16 @@ esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wa
     }
     #if CONFIG_PM_LIGHT_SLEEP_CALLBACKS
     static bool callback_registered;
-    if (automatic && rtc_pins && !callback_registered) {
+    if (automatic && !callback_registered) {
         esp_pm_sleep_cbs_register_config_t callbacks = {
+            .enter_cb = machine_sleep_enter,
             .exit_cb = machine_sleep_exit,
         };
         esp_err_t err = esp_pm_light_sleep_register_cbs(&callbacks);
         if (err != ESP_OK) {
+            // IDF may have installed the entry callback before allocation of
+            // the exit callback failed. Do not leave a half-registered pair.
+            ESP_ERROR_CHECK(esp_pm_light_sleep_unregister_cbs(&callbacks));
             return err;
         }
         callback_registered = true;
@@ -282,6 +348,12 @@ esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wa
     #endif
     machine_sleep_clear();
     esp_err_t err = machine_sleep_install(config, wake_type);
+    if (err == ESP_OK && automatic && machine_pin_irq_mask()) {
+        err = esp_sleep_enable_gpio_wakeup();
+        if (err == ESP_OK) {
+            installed_sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
+        }
+    }
     if (err != ESP_OK) {
         machine_sleep_clear();
     }

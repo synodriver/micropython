@@ -33,6 +33,7 @@
 #include "driver/rtc_io.h"
 #include "esp_sleep.h"
 #include "hal/gpio_ll.h"
+#include "soc/io_mux_reg.h"
 
 #include "py/runtime.h"
 #include "py/mphal.h"
@@ -63,6 +64,144 @@
 // Return the machine_pin_obj_t pointer corresponding to a machine_pin_irq_obj_t pointer.
 #define PIN_OBJ_PTR_FROM_IRQ_OBJ_PTR(self) ((machine_pin_obj_t *)((uintptr_t)(self) - offsetof(machine_pin_obj_t, irq)))
 
+// Automatic-sleep IRQ adapter. Protected by the port atomic mux, including on
+// dual-core targets. No Python objects are allocated from the PM callbacks.
+static uint64_t pin_irq_pins;
+static uint64_t pin_irq_pending;
+static uint64_t pin_irq_prepared;
+static gpio_int_type_t pin_irq_trigger[GPIO_PIN_COUNT];
+static bool pin_irq_level_active[GPIO_PIN_COUNT];
+static bool pin_irq_sleep_level[GPIO_PIN_COUNT];
+static bool pin_irq_sleep_sel[GPIO_PIN_COUNT];
+static mp_sched_node_t pin_irq_node;
+
+static void machine_pin_irq_dispatch(mp_sched_node_t *node) {
+    (void)node;
+    // Look up each handler at delivery, so an earlier callback can safely
+    // unregister/reconfigure another pin and discard its pending notification.
+    for (int pin = 0; pin < GPIO_PIN_COUNT; ++pin) {
+        mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+        mp_obj_t handler = MP_OBJ_NULL;
+        if (pin_irq_pending & (1ULL << pin)) {
+            pin_irq_pending &= ~(1ULL << pin);
+            handler = MP_STATE_PORT(machine_pin_irq_handler)[pin];
+        }
+        MICROPY_END_ATOMIC_SECTION(state);
+        if (handler != MP_OBJ_NULL) {
+            mp_call_function_1_protected(handler, MP_OBJ_FROM_PTR(&machine_pin_obj_table[pin]));
+        }
+    }
+}
+
+static void machine_pin_irq_queue(int pin) {
+    pin_irq_pending |= 1ULL << pin;
+    mp_sched_schedule_node(&pin_irq_node, machine_pin_irq_dispatch);
+}
+
+static bool machine_pin_irq_is_level(int pin) {
+    return pin_irq_trigger[pin] == GPIO_INTR_LOW_LEVEL || pin_irq_trigger[pin] == GPIO_INTR_HIGH_LEVEL;
+}
+
+// One notification per observed active interval for level IRQs in automatic
+// mode. Listen for the inactive level afterwards, allowing long holds to sleep.
+static void machine_pin_irq_level(int pin, bool level) {
+    bool active = level == (pin_irq_trigger[pin] == GPIO_INTR_HIGH_LEVEL);
+    if (active && !pin_irq_level_active[pin]) {
+        machine_pin_irq_queue(pin);
+    }
+    pin_irq_level_active[pin] = active;
+    gpio_set_intr_type(pin, level ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+}
+
+static void machine_pin_irq_transition(int pin, bool before, bool after) {
+    if (machine_pin_irq_is_level(pin)) {
+        machine_pin_irq_level(pin, after);
+    } else if (before != after && (pin_irq_trigger[pin] & (after ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE))) {
+        machine_pin_irq_queue(pin);
+    }
+}
+
+uint64_t machine_pin_irq_mask(void) {
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    uint64_t pins = pin_irq_pins;
+    MICROPY_END_ATOMIC_SECTION(state);
+    return pins;
+}
+
+void machine_pin_irq_sleep_enter(void) {
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    pin_irq_prepared = pin_irq_pins;
+    for (int pin = 0; pin < GPIO_PIN_COUNT; ++pin) {
+        if (!(pin_irq_prepared & (1ULL << pin))) {
+            continue;
+        }
+        bool level = gpio_get_level(pin);
+        uint64_t status = 0;
+        // Sample before checking latched interrupts: a persistent change in
+        // the handover is then covered by either status or the exit sample.
+        for (int cpu = 0; cpu < CONFIG_FREERTOS_NUMBER_OF_CORES; ++cpu) {
+            uint32_t lo, hi;
+            gpio_ll_get_intr_status(&GPIO, cpu, &lo);
+            gpio_ll_get_intr_status_high(&GPIO, cpu, &hi);
+            status |= (uint64_t)hi << 32 | lo;
+        }
+        gpio_intr_disable(pin);
+        pin_irq_sleep_level[pin] = level;
+        pin_irq_sleep_sel[pin] = (machine_sleep_gpio_config(pin) & SLP_SEL) != 0;
+        if (machine_pin_irq_is_level(pin)) {
+            machine_pin_irq_level(pin, level);
+        } else if (status & (1ULL << pin)) {
+            machine_pin_irq_queue(pin);
+        }
+        // Keep the active digital input configuration while sleeping. The
+        // registered pin must remain a digital input owned by the application.
+        gpio_sleep_sel_dis(pin);
+        // A pending callback uses the current level to reject this sleep
+        // attempt; otherwise wait for the next change, including release.
+        bool wake_level = (pin_irq_pending & (1ULL << pin)) ? level : !level;
+        ESP_ERROR_CHECK(gpio_wakeup_enable(pin, wake_level ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL));
+    }
+    MICROPY_END_ATOMIC_SECTION(state);
+}
+
+void machine_pin_irq_sleep_exit(void) {
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    for (int pin = 0; pin < GPIO_PIN_COUNT; ++pin) {
+        if (!(pin_irq_prepared & (1ULL << pin))) {
+            continue;
+        }
+        // Never infer an event from the SDK's last wake cause: it can be stale
+        // after a rejected sleep. Only report a newly observed state change.
+        bool level = gpio_get_level(pin);
+        ESP_ERROR_CHECK(gpio_wakeup_disable(pin));
+        if (pin_irq_sleep_sel[pin]) {
+            gpio_sleep_sel_en(pin);
+        } else {
+            gpio_sleep_sel_dis(pin);
+        }
+        gpio_set_intr_type(pin, pin_irq_trigger[pin]);
+        machine_pin_irq_transition(pin, pin_irq_sleep_level[pin], level);
+        // gpio_intr_enable clears the temporary level interrupt status.
+        gpio_intr_enable(pin);
+        // Cover a persistent transition during restoration. Short pulses and
+        // multiple transitions in this handover are deliberately not counted.
+        machine_pin_irq_transition(pin, level, gpio_get_level(pin));
+    }
+    pin_irq_prepared = 0;
+    MICROPY_END_ATOMIC_SECTION(state);
+}
+
+void machine_pin_irq_auto_disable(void) {
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    for (int pin = 0; pin < GPIO_PIN_COUNT; ++pin) {
+        if (pin_irq_pins & (1ULL << pin)) {
+            gpio_set_intr_type(pin, pin_irq_trigger[pin]);
+        }
+        pin_irq_level_active[pin] = false;
+    }
+    MICROPY_END_ATOMIC_SECTION(state);
+}
+
 static const machine_pin_obj_t *machine_pin_find_named(const mp_obj_dict_t *named_pins, mp_obj_t name) {
     const mp_map_t *named_map = &named_pins->map;
     mp_map_elem_t *named_elem = mp_map_lookup((mp_map_t *)named_map, name, MP_MAP_LOOKUP);
@@ -75,10 +214,17 @@ static const machine_pin_obj_t *machine_pin_find_named(const mp_obj_dict_t *name
 void machine_pins_init(void) {
     static bool did_install = false;
     if (!did_install) {
-        gpio_install_isr_service(0);
+        esp_err_t err = gpio_install_isr_service(0);
+        if (err != ESP_ERR_INVALID_STATE) {
+            ESP_ERROR_CHECK(err);
+        }
         did_install = true;
     }
     memset(&MP_STATE_PORT(machine_pin_irq_handler[0]), 0, sizeof(MP_STATE_PORT(machine_pin_irq_handler)));
+    pin_irq_pins = pin_irq_pending = pin_irq_prepared = 0;
+    memset(pin_irq_trigger, 0, sizeof(pin_irq_trigger));
+    memset(pin_irq_level_active, 0, sizeof(pin_irq_level_active));
+    memset(&pin_irq_node, 0, sizeof(pin_irq_node));
 }
 
 void machine_pins_deinit(void) {
@@ -87,13 +233,92 @@ void machine_pins_deinit(void) {
             gpio_isr_handler_remove(i);
         }
     }
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    pin_irq_pins = pin_irq_pending = 0;
+    memset(&MP_STATE_PORT(machine_pin_irq_handler[0]), 0, sizeof(MP_STATE_PORT(machine_pin_irq_handler)));
+    MICROPY_END_ATOMIC_SECTION(state);
 }
 
 static void machine_pin_isr_handler(void *arg) {
     machine_pin_obj_t *self = arg;
-    mp_obj_t handler = MP_STATE_PORT(machine_pin_irq_handler)[PIN_OBJ_PTR_INDEX(self)];
-    mp_sched_schedule(handler, MP_OBJ_FROM_PTR(self));
+    int pin = PIN_OBJ_PTR_INDEX(self);
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    mp_obj_t handler = MP_STATE_PORT(machine_pin_irq_handler)[pin];
+    if (handler != MP_OBJ_NULL && (pin_irq_pins & (1ULL << pin))) {
+        if (machine_auto_lightsleep_enabled()) {
+            if (machine_pin_irq_is_level(pin)) {
+                machine_pin_irq_level(pin, gpio_get_level(pin));
+            } else {
+                machine_pin_irq_queue(pin);
+            }
+        } else {
+            mp_sched_schedule(handler, MP_OBJ_FROM_PTR(self));
+        }
+    }
+    MICROPY_END_ATOMIC_SECTION(state);
     mp_hal_wake_main_task_from_isr();
+}
+
+static void machine_pin_irq_configure(machine_pin_obj_t *self, mp_obj_t handler, uint32_t trigger) {
+    int pin = PIN_OBJ_PTR_INDEX(self);
+    if (trigger >= GPIO_INTR_MAX) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid IRQ trigger"));
+    }
+    uint64_t old_pins = machine_pin_irq_mask();
+    uint64_t pins = old_pins & ~(1ULL << pin);
+    if (handler != MP_OBJ_NULL && trigger != GPIO_INTR_DISABLE) {
+        pins |= 1ULL << pin;
+    }
+    bool automatic = machine_auto_lightsleep_enabled();
+    if (automatic) {
+        check_esp_err(machine_sleep_lock());
+        esp_err_t err = machine_sleep_irq_update(pins);
+        if (err != ESP_OK) {
+            machine_sleep_unlock();
+            check_esp_err(err);
+        }
+    }
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    mp_obj_t old_handler = MP_STATE_PORT(machine_pin_irq_handler)[pin];
+    gpio_int_type_t old_trigger = pin_irq_trigger[pin];
+    gpio_int_type_t old_hardware_trigger = GPIO.pin[pin].int_type;
+    bool old_level_active = pin_irq_level_active[pin];
+    gpio_isr_handler_remove(pin);
+    MP_STATE_PORT(machine_pin_irq_handler)[pin] = handler;
+    pin_irq_trigger[pin] = trigger;
+    pin_irq_pins = pins;
+    pin_irq_level_active[pin] = false;
+    gpio_int_type_t hardware_trigger = trigger;
+    if (automatic && (machine_rtc_config.gpio_pins & (1ULL << pin))) {
+        // Disabling an ordinary IRQ must not disarm a separately configured
+        // GPIO wake source. There is no CPU ISR for a disabled/null handler.
+        hardware_trigger = machine_rtc_config.gpio_level ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL;
+    }
+    gpio_set_intr_type(pin, hardware_trigger);
+    esp_err_t err = ESP_OK;
+    if (pins & (1ULL << pin)) {
+        err = gpio_isr_handler_add(pin, machine_pin_isr_handler, self);
+    }
+    if (err == ESP_OK) {
+        pin_irq_pending &= ~(1ULL << pin);
+    } else {
+        MP_STATE_PORT(machine_pin_irq_handler)[pin] = old_handler;
+        pin_irq_trigger[pin] = old_trigger;
+        pin_irq_pins = old_pins;
+        pin_irq_level_active[pin] = old_level_active;
+        gpio_set_intr_type(pin, old_hardware_trigger);
+        if (old_pins & (1ULL << pin)) {
+            ESP_ERROR_CHECK(gpio_isr_handler_add(pin, machine_pin_isr_handler, self));
+        }
+    }
+    MICROPY_END_ATOMIC_SECTION(state);
+    if (automatic) {
+        if (err != ESP_OK) {
+            ESP_ERROR_CHECK(machine_sleep_irq_update(old_pins));
+        }
+        machine_sleep_unlock();
+    }
+    check_esp_err(err);
 }
 
 static const machine_pin_obj_t *machine_pin_find(mp_obj_t pin_in) {
@@ -349,7 +574,9 @@ static mp_obj_t machine_pin_irq(size_t n_args, const mp_obj_t *pos_args, mp_map_
 
     if (n_args > 1 || kw_args->used != 0) {
         // configure irq
+        #if SOC_PM_SUPPORT_EXT0_WAKEUP
         gpio_num_t index = PIN_OBJ_PTR_INDEX(self);
+        #endif
         mp_obj_t handler = args[ARG_handler].u_obj;
         uint32_t trigger = args[ARG_trigger].u_int;
         mp_obj_t wake_obj = args[ARG_wake].u_obj;
@@ -390,22 +617,22 @@ static mp_obj_t machine_pin_irq(size_t n_args, const mp_obj_t *pos_args, mp_map_
             machine_sleep_set_config(&config);
             #endif
         } else {
+            if (handler == mp_const_none) {
+                handler = MP_OBJ_NULL;
+                trigger = 0;
+            }
+            if (trigger >= GPIO_INTR_MAX) {
+                mp_raise_ValueError(MP_ERROR_TEXT("invalid IRQ trigger"));
+            }
             #if SOC_PM_SUPPORT_EXT0_WAKEUP
-            if (machine_rtc_config.ext0_pin == index) {
+            if ((handler == MP_OBJ_NULL || !machine_auto_lightsleep_enabled()) && machine_rtc_config.ext0_pin == index) {
                 machine_rtc_config_t config = machine_rtc_config;
                 config.ext0_pin = -1;
                 machine_sleep_set_config(&config);
             }
             #endif
 
-            if (handler == mp_const_none) {
-                handler = MP_OBJ_NULL;
-                trigger = 0;
-            }
-            gpio_isr_handler_remove(index);
-            MP_STATE_PORT(machine_pin_irq_handler)[index] = handler;
-            gpio_set_intr_type(index, trigger);
-            gpio_isr_handler_add(index, machine_pin_isr_handler, (void *)self);
+            machine_pin_irq_configure(self, handler, trigger);
         }
     }
 
@@ -441,6 +668,8 @@ static const mp_rom_map_elem_t machine_pin_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_PULL_DOWN), MP_ROM_INT(GPIO_PULL_DOWN) },
     { MP_ROM_QSTR(MP_QSTR_IRQ_RISING), MP_ROM_INT(GPIO_INTR_POSEDGE) },
     { MP_ROM_QSTR(MP_QSTR_IRQ_FALLING), MP_ROM_INT(GPIO_INTR_NEGEDGE) },
+    { MP_ROM_QSTR(MP_QSTR_IRQ_LOW_LEVEL), MP_ROM_INT(GPIO_INTR_LOW_LEVEL) },
+    { MP_ROM_QSTR(MP_QSTR_IRQ_HIGH_LEVEL), MP_ROM_INT(GPIO_INTR_HIGH_LEVEL) },
     { MP_ROM_QSTR(MP_QSTR_WAKE_LOW), MP_ROM_INT(GPIO_INTR_LOW_LEVEL) },
     { MP_ROM_QSTR(MP_QSTR_WAKE_HIGH), MP_ROM_INT(GPIO_INTR_HIGH_LEVEL) },
     { MP_ROM_QSTR(MP_QSTR_DRIVE_0), MP_ROM_INT(GPIO_DRIVE_CAP_0) },
@@ -489,17 +718,29 @@ MP_DEFINE_CONST_OBJ_TYPE(
 static mp_obj_t machine_pin_irq_call(mp_obj_t self_in, size_t n_args, size_t n_kw, const mp_obj_t *args) {
     machine_pin_irq_obj_t *self = self_in;
     mp_arg_check_num(n_args, n_kw, 0, 0, false);
-    machine_pin_isr_handler((void *)PIN_OBJ_PTR_FROM_IRQ_OBJ_PTR(self));
+    const machine_pin_obj_t *pin = PIN_OBJ_PTR_FROM_IRQ_OBJ_PTR(self);
+    int index = PIN_OBJ_PTR_INDEX(pin);
+    mp_uint_t state = MICROPY_BEGIN_ATOMIC_SECTION();
+    mp_obj_t handler = MP_STATE_PORT(machine_pin_irq_handler)[index];
+    if (handler != MP_OBJ_NULL) {
+        if (machine_auto_lightsleep_enabled()) {
+            machine_pin_irq_queue(index);
+        } else {
+            mp_sched_schedule(handler, MP_OBJ_FROM_PTR(pin));
+        }
+    }
+    MICROPY_END_ATOMIC_SECTION(state);
     return mp_const_none;
 }
 
 static mp_obj_t machine_pin_irq_trigger(size_t n_args, const mp_obj_t *args) {
     machine_pin_irq_obj_t *self = args[0];
     gpio_num_t index = PIN_OBJ_PTR_INDEX(PIN_OBJ_PTR_FROM_IRQ_OBJ_PTR(self));
-    uint32_t orig_trig = GPIO.pin[index].int_type;
+    uint32_t orig_trig = machine_auto_lightsleep_enabled() ? pin_irq_trigger[index] : GPIO.pin[index].int_type;
     if (n_args == 2) {
         // set trigger
-        gpio_set_intr_type(index, mp_obj_get_int(args[1]));
+        machine_pin_irq_configure(PIN_OBJ_PTR_FROM_IRQ_OBJ_PTR(self),
+            MP_STATE_PORT(machine_pin_irq_handler)[index], mp_obj_get_int(args[1]));
     }
     // return original trigger value
     return MP_OBJ_NEW_SMALL_INT(orig_trig);

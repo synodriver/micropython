@@ -359,6 +359,12 @@ void mp_hal_wake_main_task_if_suspended(void) {
     if (machine_auto_lightsleep_enabled() && mp_main_task_handle != NULL) {
         if (xPortInIsrContext()) {
             mp_hal_wake_main_task_from_isr();
+        } else if (xTaskGetSchedulerState() == taskSCHEDULER_SUSPENDED) {
+            // PM entry/exit callbacks run in tickless idle with scheduling
+            // suspended. Defer unblocking via the pending-ready list, without
+            // yielding from the PM critical section or changing delayed lists
+            // while IDF is still stepping the tick count.
+            vTaskNotifyGiveFromISR(mp_main_task_handle, NULL);
         } else {
             mp_hal_wake_main_task();
         }

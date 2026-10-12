@@ -295,9 +295,23 @@ reset clears them.  Use ``wake_on_ext0(pin=None)`` or
 For EXT1 and GPIO, ``pins=None`` keeps the existing pin set.
 
 These functions configure level-based wakeup, not a Python interrupt callback.
-Normal ``Pin.irq`` edge interrupts do not automatically enable wakeup or prevent
-automatic light sleep.  GPIO wakeup shares the pin's interrupt trigger setting;
-applications must verify compatibility before using both on one pin.  EXT wakeup
+Ordinary ``Pin.irq(handler=..., trigger=...)`` registrations now automatically
+use digital GPIO wakeup during automatic light sleep; no ``wake=`` argument is
+needed. Configuring an explicit sleep wakeup source on the same pin is rejected
+while automatic sleep is enabled, including when enabling it with an existing
+conflict. The automatic IRQ adapter requires PM sleep callbacks and retention
+of the digital GPIO peripheral domain; unsupported builds raise ``OSError``.
+It does not extend ordinary IRQ handling to manual or deep sleep.
+
+During automatic sleep, edge notifications are inferred from sampled changes;
+short pulses returning to the initial level can be missed. Notifications may
+coalesce and are not an exact edge count. Level IRQs notify once per observed
+active interval, rearming after the inactive level is observed. Handler execution
+is scheduled, with no hard real-time guarantee. Use ``asyncio.ThreadSafeFlag``
+to notify a coroutine. Disabling automatic sleep restores the original IRQ
+trigger and ordinary scheduling, including repeated level interrupts.
+
+GPIO wakeup shares the pin's interrupt trigger setting. EXT wakeup
 pins should be dedicated digital inputs, not shared with RTC peripherals or
 application-managed hold settings.  The port restores their digital function
 after light sleep.  Deep-sleep wakeup restarts the interpreter.

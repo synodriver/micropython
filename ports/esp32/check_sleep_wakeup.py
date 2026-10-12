@@ -28,11 +28,19 @@ typedef int bool;
 typedef int esp_err_t;
 typedef int gpio_num_t;
 typedef int mp_int_t;
+typedef unsigned int mp_uint_t;
 typedef void *mp_obj_t;
 typedef struct { size_t used; } mp_map_t;
 typedef union { mp_obj_t u_obj; mp_int_t u_int; bool u_bool; } mp_arg_val_t;
 typedef struct { int qstr; int flags; mp_arg_val_t defval; } mp_arg_t;
-typedef struct { int irq; } machine_pin_obj_t;
+typedef struct { int unused; } machine_pin_irq_obj_t;
+typedef struct { struct { void *type; } base; machine_pin_irq_obj_t irq; } machine_pin_obj_t;
+typedef struct _mp_sched_node_t mp_sched_node_t;
+struct _mp_sched_node_t { void (*callback)(mp_sched_node_t *); mp_sched_node_t *next; };
+#define MICROPY_BEGIN_ATOMIC_SECTION() 0
+#define MICROPY_END_ATOMIC_SECTION(state) ((void)(state))
+#define GPIO_PIN_COUNT SOC_GPIO_PIN_COUNT
+#define PIN_OBJ_PTR_FROM_IRQ_OBJ_PTR(self) ((machine_pin_obj_t *)(self))
 #define MP_ARG_OBJ 1
 #define MP_ARG_INT 2
 #define MP_ARG_BOOL 4
@@ -46,7 +54,12 @@ typedef struct { int irq; } machine_pin_obj_t;
 #define mp_const_none ((mp_obj_t)1)
 mp_obj_t machine_pin_irq_handler[64];
 static machine_pin_obj_t machine_pin_obj_table[64];
-void machine_pin_isr_handler(void *);
+static void machine_pin_isr_handler(void *);
+bool mp_sched_schedule_node(mp_sched_node_t *, void (*)(mp_sched_node_t *));
+bool mp_sched_schedule(mp_obj_t, mp_obj_t);
+void mp_call_function_1_protected(mp_obj_t, mp_obj_t);
+void mp_hal_wake_main_task_from_isr(void);
+void mp_arg_check_num(size_t, size_t, size_t, size_t, bool);
 bool mp_obj_is_true(mp_obj_t);
 bool mp_obj_get_int_maybe(mp_obj_t, mp_int_t *);
 void mp_obj_get_array(mp_obj_t, size_t *, mp_obj_t **);
@@ -95,7 +108,7 @@ def declarations(parser, source, names):
         try:
             result.append(check_lightsleep.declarations(parser, source, (name,)))
         except ValueError:
-            matches = re.findall(r"\b(?:bool|void)\s+" + name + r"\s*\([^;{}]*\)\s*;", source)
+            matches = re.findall(r"\b(?:bool|void|int)\s+" + name + r"\s*\([^;{}]*\)\s*;", source)
             if len(matches) != 1:
                 raise
             result.extend(matches)
@@ -131,9 +144,22 @@ def main():
     implementation += check_sdk.function(
         parser, (port / "modmachine.c").read_text(), "machine_sleep_helper"
     )
-    implementation += check_sdk.function(
-        parser, (port / "machine_pin.c").read_text(), "machine_pin_irq"
+    pin_source = (port / "machine_pin.c").read_text()
+    implementation += (
+        pin_source.split("// Automatic-sleep IRQ adapter.", 1)[1]
+        .split("static const machine_pin_obj_t *machine_pin_find_named", 1)[0]
+        .split("\n", 1)[1]
     )
+    for name in (
+        "machine_pins_init",
+        "machine_pins_deinit",
+        "machine_pin_isr_handler",
+        "machine_pin_irq_configure",
+        "machine_pin_irq",
+        "machine_pin_irq_call",
+        "machine_pin_irq_trigger",
+    ):
+        implementation += check_sdk.function(parser, pin_source, name)
     for name, condition in (
         ("esp32_wake_on_ext0", "SOC_PM_SUPPORT_EXT0_WAKEUP"),
         ("esp32_wake_on_ext1", "SOC_PM_SUPPORT_EXT1_WAKEUP"),
@@ -153,7 +179,7 @@ def main():
         for value, name in enumerate(sorted(set(re.findall(r"MP_QSTR_\w+", implementation))), 1)
     )
     options = (
-        ["/nologo", "/Zs", "/std:c11", "/TC", "/WX"]
+        ["/nologo", "/Zs", "/std:c11", "/TC", "/WX", "/we4013"]
         if Path(args.compiler).stem.lower() == "cl"
         else ["-fsyntax-only", "-std=c11", "-Werror=implicit-function-declaration"]
     )
@@ -228,6 +254,7 @@ def main():
                     f"CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP {peripheral_pd}",
                     f"ESP_IDF_VERSION_MAJOR {major}",
                     "CONFIG_FREERTOS_USE_TICKLESS_IDLE 1",
+                    f"CONFIG_FREERTOS_NUMBER_OF_CORES {2 if chip in ('esp32', 'esp32s3', 'esp32p4') else 1}",
                     f"SOC_CAPS_ECO_VER {0 if hw == 'hw_ver1' else 3}",
                     f"CONFIG_ESP32P4_SELECTS_REV_LESS_V3 {int(hw == 'hw_ver1')}",
                     "__attribute__(...) ",
@@ -256,6 +283,7 @@ def main():
                             "esp_pm_light_sleep_cb_t",
                             "esp_pm_sleep_cbs_register_config_t",
                             "esp_pm_light_sleep_register_cbs",
+                            "esp_pm_light_sleep_unregister_cbs",
                         ),
                     )
                 sdk_types += sdk(
@@ -276,6 +304,10 @@ def main():
                         "gpio_isr_t",
                         "gpio_isr_handler_remove",
                         "gpio_isr_handler_add",
+                        "gpio_install_isr_service",
+                        "gpio_intr_enable",
+                        "gpio_intr_disable",
+                        "gpio_get_level",
                         "gpio_set_intr_type",
                         "gpio_sleep_set_direction",
                         "gpio_sleep_sel_en",
@@ -333,6 +365,10 @@ def main():
                 layout = check_sdk.preprocess(caps + registers, defs)
                 # Keep register subtypes as well as gpio_dev_t (IDF 6 uses both).
                 layout = re.sub(r"_Static_assert\([^;]*;", "", layout)
+                ll = header(f"{hal}/{chip}/include/hal/gpio_ll.h")
+                for name in ("gpio_ll_get_intr_status", "gpio_ll_get_intr_status_high"):
+                    signature = check_sdk.function(parser, ll, name).split("{", 1)[0]
+                    layout += signature.replace("static inline ", "") + ";\n"
                 iomux_layout = iomux_struct
                 iomux_layout = re.sub(r"_Static_assert\([^;]*;", "", iomux_layout)
                 code = check_sdk.preprocess(

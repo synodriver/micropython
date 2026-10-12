@@ -21,6 +21,17 @@ typedef unsigned int uint32_t;
 typedef unsigned char uint8_t;
 typedef long long int64_t;
 typedef unsigned int TickType_t;
+typedef int BaseType_t;
+typedef void *TaskHandle_t;
+TaskHandle_t mp_main_task_handle;
+#define pdTRUE 1
+#define taskSCHEDULER_SUSPENDED 0
+#define portYIELD_FROM_ISR() fake_yield_from_isr()
+void fake_yield_from_isr(void);
+BaseType_t xPortInIsrContext(void);
+BaseType_t xTaskGetSchedulerState(void);
+void xTaskNotifyGive(TaskHandle_t);
+void vTaskNotifyGiveFromISR(TaskHandle_t, BaseType_t *);
 typedef unsigned int mp_uint_t;
 typedef int mp_int_t;
 typedef unsigned long long size_t;
@@ -93,6 +104,7 @@ machine_rtc_config_t machine_rtc_config;
 esp_err_t machine_sleep_lock(void);
 void machine_sleep_unlock(void);
 void machine_sleep_clear(void);
+void machine_pin_irq_auto_disable(void);
 esp_err_t machine_sleep_apply(const machine_rtc_config_t *, int, bool);
 """
 
@@ -177,6 +189,9 @@ def main():
             "mp_hal_prepare_auto_lightsleep",
             "mp_hal_wait_ticks",
             "mp_hal_wait_ms",
+            "mp_hal_wake_main_task",
+            "mp_hal_wake_main_task_from_isr",
+            "mp_hal_wake_main_task_if_suspended",
         ),
         "usb.c": ("usb_device_active", "tud_event_hook_cb"),
         "usb_serial_jtag.c": ("usb_serial_jtag_connected",),

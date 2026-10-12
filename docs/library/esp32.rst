@@ -296,11 +296,17 @@ For EXT1 and GPIO, ``pins=None`` keeps the existing pin set.
 
 These functions configure level-based wakeup, not a Python interrupt callback.
 Ordinary ``Pin.irq(handler=..., trigger=...)`` registrations now automatically
-use digital GPIO wakeup during automatic light sleep; no ``wake=`` argument is
+configure wakeup during automatic light sleep; no ``wake=`` argument is
 needed. Configuring an explicit sleep wakeup source on the same pin is rejected
 while automatic sleep is enabled, including when enabling it with an existing
-conflict. The automatic IRQ adapter requires PM sleep callbacks and retention
-of the digital GPIO peripheral domain; unsupported builds raise ``OSError``.
+conflict. The automatic IRQ adapter requires PM sleep callbacks. It uses digital
+GPIO wakeup when that peripheral domain is retained, or EXT1 for valid RTC wakeup
+inputs when ``CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP`` is enabled.
+Unsupported inputs raise ``OSError``. Where EXT1 has a shared polarity, the
+fallback accepts only one ordinary IRQ input and no explicit EXT1 input. Where
+EXT1 supports a separate polarity per pin, distinct explicit EXT1 inputs can
+coexist. Temporary EXT1 inputs are removed after every sleep attempt, preserving
+the explicit configuration. This does not enable peripheral powerdown by default.
 It does not extend ordinary IRQ handling to manual or deep sleep.
 
 During automatic sleep, edge notifications are inferred from sampled changes;

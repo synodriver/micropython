@@ -153,13 +153,13 @@ void machine_pin_irq_sleep_enter(void) {
         } else if (status & (1ULL << pin)) {
             machine_pin_irq_queue(pin);
         }
-        // Keep the active digital input configuration while sleeping. The
-        // registered pin must remain a digital input owned by the application.
+        // Keep the active input configuration for digital wakeup and chips
+        // whose EXT1 path uses the HP IOMUX. Restore selection on every exit.
         gpio_sleep_sel_dis(pin);
         // A pending callback uses the current level to reject this sleep
         // attempt; otherwise wait for the next change, including release.
         bool wake_level = (pin_irq_pending & (1ULL << pin)) ? level : !level;
-        ESP_ERROR_CHECK(gpio_wakeup_enable(pin, wake_level ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL));
+        machine_sleep_irq_prepare(pin, wake_level);
     }
     MICROPY_END_ATOMIC_SECTION(state);
 }
@@ -172,8 +172,8 @@ void machine_pin_irq_sleep_exit(void) {
         }
         // Never infer an event from the SDK's last wake cause: it can be stale
         // after a rejected sleep. Only report a newly observed state change.
+        machine_sleep_irq_finish(pin);
         bool level = gpio_get_level(pin);
-        ESP_ERROR_CHECK(gpio_wakeup_disable(pin));
         if (pin_irq_sleep_sel[pin]) {
             gpio_sleep_sel_en(pin);
         } else {

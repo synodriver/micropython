@@ -242,6 +242,7 @@ def main():
                 raise ValueError("SDK GPIO_PIN_MUX_REG declaration missing")
             for pm, callbacks, peripheral_pd, ulp in (
                 (1, 1, 0, "FSM"),
+                (1, 1, 1, "FSM"),
                 (1, 0, 1, "FSM"),
                 (0, 0, 0, "FSM"),
                 (1, 1, 0, "RISCV"),
@@ -329,7 +330,13 @@ def main():
                     sdk_types += sdk("sleep", ("esp_sleep_enable_ext0_wakeup",))
                 if capable("SOC_PM_SUPPORT_EXT1_WAKEUP"):
                     sdk_types += sdk(
-                        "sleep", ("esp_sleep_ext1_wakeup_mode_t", "esp_sleep_enable_ext1_wakeup")
+                        "sleep",
+                        (
+                            "esp_sleep_ext1_wakeup_mode_t",
+                            "esp_sleep_enable_ext1_wakeup",
+                            "esp_sleep_enable_ext1_wakeup_io",
+                            "esp_sleep_disable_ext1_wakeup_io",
+                        ),
                     )
                 if capable("SOC_RTCIO_PIN_COUNT > 0"):
                     sdk_types += sdk("rtc", ("rtc_gpio_deinit",))

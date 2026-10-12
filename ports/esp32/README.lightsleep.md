@@ -187,7 +187,7 @@ machine.lightsleep(1000)
 
 | trigger | 自动模式下的行为 |
 | --- | --- |
-| `IRQ_RISING` / `IRQ_FALLING` / 二者按位或 | 运行时保留硬件边沿检测；入睡前暂时改成与当前电平相反的 GPIO 电平唤醒，醒后比较电平，并按订阅方向通知 |
+| `IRQ_RISING` / `IRQ_FALLING` / 二者按位或 | 运行时保留硬件边沿检测；入睡前暂时改成与当前电平相反的电平唤醒（GPIO 或 EXT1），醒后比较电平，并按订阅方向通知 |
 | `IRQ_LOW_LEVEL` / `IRQ_HIGH_LEVEL` | 每段**观察到的**有效电平通知一次，随后监测恢复无效电平，再允许下一次通知；注册时已有效也会通知 |
 
 电平常量也是现有 `WAKE_LOW` / `WAKE_HIGH` 的别名。持续按住按钮不会反复交付
@@ -236,20 +236,32 @@ asyncio.run(main())
 
 **限制与配置冲突：**
 
-- 第一版仅使用数字 GPIO light-sleep 唤醒，要求数字 GPIO 电源域保留、
-  `CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y`。关闭回调或开启
-  `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP` 的构建，在存在普通 IRQ 时启用
-  自动模式，或在自动模式中注册 IRQ，会抛 `OSError(EOPNOTSUPP)`；没有自动回退 EXT1。
+- 要求 `CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y`。默认构建继续使用数字 GPIO 唤醒。
+  自定义构建开启 `CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP` 时，普通 IRQ
+  自动使用 EXT1；所有注册输入必须是 SDK 支持的 RTC 唤醒引脚，否则启用自动模式或
+  注册 IRQ 抛 `OSError(EOPNOTSUPP)`，保留原配置。关闭 PM 回调时同样拒绝。
+  此功能不自动修改编译配置，也不保证其他外设支持断电恢复。
+- EXT1 逐引脚极性的芯片（如 C5/C6/H2/P4）允许多个普通 IRQ 和不同引脚的显式 EXT1
+  共存；本次睡眠的极性按各引脚当前电平动态设置。对只有共享极性的芯片，EXT1 回退
+  仅接受一个普通 IRQ，且不能同时配置显式 EXT1；不把经典 ESP32 的 `ALL_LOW`
+  当作任意一个输入变低，也不只根据注册瞬间的电平判定将来是否兼容。
+  不支持外设域断电配置的芯片仍按默认数字 GPIO 路径工作。
+- 临时 EXT1 配置与用户 `wake_on_ext1()` 配置分别保存；每次退出（包括跳过/拒绝睡眠）
+  释放临时保持、恢复数字输入，再撤销本次引脚，不覆盖用户的显式 EXT1 集合。
+  用户仍只调用普通 `Pin.irq`，无须选择后端。
 - 引脚必须始终是有效的专用数字输入，电平稳定且满足硬件唤醒采样要求。不要与
   Flash/PSRAM、USB、ADC、Touch、ULP、外设复用或应用自己的保持配置共用。注册后
   不要用 `Pin.init()`、直接寄存器访问或其他驱动改变该引脚的用途。数字 GPIO 唤醒
-  不受 EXT0/EXT1 的 RTC 引脚集合限制，但仍须遵守具体芯片的 GPIO 硬件限制。
+  不受 RTC 引脚集合限制；EXT1 回退受该集合限制，建议使用外部上拉/下拉。
+  两条路径都须遵守具体芯片的 GPIO 硬件限制。
 - 自动模式下，同一引脚的普通 IRQ 与显式 `wake_on_ext0/ext1/gpio()` 睡眠唤醒配置
   冲突会抛 `OSError`；先后两种配置顺序都检查，不覆盖原配置。不同引脚可共存，SDK
   仍可能拒绝其他组合，例如经典 ESP32 的 GPIO 唤醒与 Touch/ULP 唤醒。
 - **不能保证捕获每个边沿或任意窄脉冲。** 睡前为高、醒后为低只表示至少发生过一次
   下降变化；睡眠或交接期间若高→低→高，最终电平相同，可能完全不通知，即使短暂电平
   曾唤醒 CPU。没有根据旧的 wake reason 伪造事件，也不从一次 GPIO 唤醒推断脉冲次数。
+  EXT1 回退同样使用前后电平采样，暂未使用 EXT1 锁存状态补报：IDF 的 PM 退出回调
+  传入的是调用耗时，睡眠被拒绝时也可能大于零，不能据此证明本次锁存状态有效。
 - 回调可能合并；硬件 ISR 与恢复过程的交接、真实抖动也可能造成重复通知，不保证
   每个物理事件恰好一次。电平释放后又迅速有效且释放未被观察到，也可能被合并。
   此功能不提供消抖、精确计数、事件时间戳或硬实时响应；需要这些保证时应保持运行，
@@ -311,7 +323,8 @@ machine.freq(hz, hz, False)
 自动 EXT0/EXT1 恢复需要 `CONFIG_PM_LIGHT_SLEEP_CALLBACKS=y`，已加入 `sdkconfig.base`；
 已有构建目录需更新最终 sdkconfig。关闭此项的自定义构建仍可自动休眠和使用 GPIO 唤醒，
 但配置自动 EXT 唤醒会抛 `OSError`。开启 `PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP`
-的自定义构建不能使用这里的普通 GPIO light-sleep 唤醒路径，应使用有效 EXT1 引脚。
+的自定义构建不能使用显式 `wake_on_gpio()` light-sleep 唤醒；普通 `Pin.irq` 会按
+上述规则回退到 EXT1，显式唤醒也应使用有效 EXT1 引脚。
 临时 PM 锁仅保护配置更新，不根据 IRQ 注册情况阻止日常自动休眠。
 
 `wake_on_ulp(True)` 的自动模式仅支持 FSM ULP。IDF 5.5～6.1 的逐源关闭接口不能完整
@@ -324,6 +337,10 @@ machine.freq(hz, hz, False)
 `tests/ports/esp32/machine_auto_lightsleep_irq.py` 检查普通调度队列满时静态 IRQ 通知、
 事件合并、注销待处理事件、注册顺序、显式唤醒冲突回滚、trigger getter/setter 和
 asyncio flag。该用例用软件调用 IRQ 对象，不验证物理睡眠唤醒；选择的输入引脚需空闲。
+还检查单参数 `machine.freq(hz)` 关闭自动模式后恢复普通队列的两次独立通知，以及
+EXT1 冲突回滚、无新输入时不重复通知。支持外设域断电的目标应分别在默认和开启
+断电的固件运行；断电构建额外运行 `machine_auto_lightsleep_ext1.py`，检查无效引脚
+拒绝和独立显式 EXT1 配置在多次睡眠尝试后仍可使用。
 实机还需分别测试运行/睡眠时外部按下、长按和松开、双边沿、多引脚、短脉冲、抖动、
 快速重配、重复启停及软复位，并断开 USB 测电流。不能用该用例通过替代这些验证。
 

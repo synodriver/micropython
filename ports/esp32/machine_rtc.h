@@ -67,13 +67,15 @@ void machine_sleep_restore_pins(void);
 void machine_sleep_set_config(const machine_rtc_config_t *config);
 void machine_sleep_deinit(void);
 
-// Ordinary Pin IRQs use digital GPIO wakeup only during automatic light sleep.
+// Ordinary Pin IRQs temporarily use GPIO or EXT1 during automatic light sleep.
 // Configuration functions run with the VM GIL and the configuration PM lock.
 uint64_t machine_pin_irq_mask(void);
 void machine_pin_irq_sleep_enter(void);
 void machine_pin_irq_sleep_exit(void);
 void machine_pin_irq_auto_disable(void);
 esp_err_t machine_sleep_irq_update(uint64_t pins);
+void machine_sleep_irq_prepare(int pin, bool wake_high);
+void machine_sleep_irq_finish(int pin);
 uint32_t machine_sleep_gpio_config(int pin);
 
 // User backup memory buffer, shared with machine.mem_backup on esp32.

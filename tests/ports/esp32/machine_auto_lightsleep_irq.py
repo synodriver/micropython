@@ -87,11 +87,22 @@ try:
     time.sleep_ms(30)
     assert hits == [p]
     p.irq(handler=None)
-    esp32.wake_on_gpio(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
+    wake_source = getattr(esp32, "wake_on_ext1", esp32.wake_on_gpio)
+    wake_source(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
     rejected(lambda: p.irq(handler=handler, trigger=Pin.IRQ_RISING))
     assert p.irq().trigger() == 0
-    esp32.wake_on_gpio(pins=[])
+    wake_source(pins=[])
     print("conflict rollback in both orders OK")
+
+    if hasattr(esp32, "wake_on_ext1"):
+        p.irq(handler=handler, trigger=Pin.IRQ_RISING)
+        rejected(lambda: esp32.wake_on_ext1(pins=(p,), level=esp32.WAKEUP_ANY_HIGH))
+        p.irq(handler=None)
+        esp32.wake_on_ext1(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
+        rejected(lambda: p.irq(handler=handler, trigger=Pin.IRQ_RISING))
+        assert p.irq().trigger() == 0
+        esp32.wake_on_ext1(pins=[])
+    print("EXT1 conflict rollback OK")
 
     irq = p.irq(handler=handler, trigger=Pin.IRQ_HIGH_LEVEL)
     time.sleep_ms(30)
@@ -115,6 +126,22 @@ try:
     asyncio.run(run())
     print("asyncio notification OK")
 
+    # No new electrical input: timer wakeups must not replay old notifications.
+    p.irq(handler=handler, trigger=Pin.IRQ_RISING)
+    hits.clear()
+    time.sleep_ms(250)
+    assert hits == []
+    machine.freq(hz)
+
+    def twice(_):
+        irq()
+        irq()
+
+    micropython.schedule(twice, None)
+    time.sleep_ms(30)
+    assert hits == [p, p]
+    print("original single-argument and IRQ scheduling OK")
+
     # A conflict registered while automatic sleep is off must also be rejected
     # when enabling PM, without disabling the existing ordinary IRQ.
     machine.freq(hz)
@@ -126,3 +153,5 @@ finally:
     p.irq(handler=None)
     machine.freq(hz)
     esp32.wake_on_gpio(pins=[])
+    if hasattr(esp32, "wake_on_ext1"):
+        esp32.wake_on_ext1(pins=[])

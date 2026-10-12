@@ -31,6 +31,11 @@ static uint64_t installed_rtc_pins;
 static gpio_int_type_t saved_irq_type[GPIO_NUM_MAX];
 static uint32_t saved_sleep_config[GPIO_NUM_MAX];
 static gpio_int_type_t installed_irq_type;
+// Temporary EXT1 inputs belong to the current automatic sleep attempt, not to
+// machine_rtc_config. Keep explicit wake sources intact when undoing them.
+#if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_PM_SUPPORT_EXT1_WAKEUP
+static uint64_t irq_ext1_pins;
+#endif
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t config_lock;
@@ -108,7 +113,7 @@ static esp_err_t machine_sleep_irq_validate(const machine_rtc_config_t *config, 
     if (!pins) {
         return ESP_OK;
     }
-    #if !CONFIG_PM_LIGHT_SLEEP_CALLBACKS || CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
+    #if !CONFIG_PM_LIGHT_SLEEP_CALLBACKS
     (void)config;
     return ESP_ERR_NOT_SUPPORTED;
     #else
@@ -121,16 +126,39 @@ static esp_err_t machine_sleep_irq_validate(const machine_rtc_config_t *config, 
     #if SOC_PM_SUPPORT_EXT1_WAKEUP
     explicit_pins |= config->ext1_pins;
     #endif
-    return (pins & explicit_pins) ? ESP_ERR_INVALID_ARG : ESP_OK;
+    if (pins & explicit_pins) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
+    #if SOC_PM_SUPPORT_EXT1_WAKEUP
+    for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
+        if ((pins & (1ULL << pin)) && !esp_sleep_is_valid_wakeup_gpio(pin)) {
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+    }
+    #if !SOC_PM_SUPPORT_EXT1_WAKEUP_MODE_PER_PIN
+    // The wake level follows each input's sampled state (including release).
+    // A shared polarity cannot represent arbitrary future input combinations.
+    // ALL_LOW on ESP32 must not become an AND of independent IRQ inputs.
+    if ((pins & (pins - 1)) || config->ext1_pins) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    #endif
+    #else
+    return ESP_ERR_NOT_SUPPORTED;
+    #endif
+    #endif
+    return ESP_OK;
     #endif
 }
 
-esp_err_t machine_sleep_irq_update(uint64_t pins) {
-    esp_err_t err = machine_sleep_irq_validate(&machine_rtc_config, pins);
-    if (err != ESP_OK) {
-        return err;
-    }
-    if (pins || machine_rtc_config.gpio_pins) {
+static esp_err_t machine_sleep_irq_source(const machine_rtc_config_t *config, uint64_t pins) {
+    esp_err_t err = ESP_OK;
+    #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
+    // EXT1 is armed with the freshly sampled levels in the entry callback.
+    pins = 0;
+    #endif
+    if (pins || config->gpio_pins) {
         err = esp_sleep_enable_gpio_wakeup();
         if (err == ESP_OK) {
             installed_sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
@@ -145,6 +173,43 @@ esp_err_t machine_sleep_irq_update(uint64_t pins) {
         }
     }
     return err;
+}
+
+esp_err_t machine_sleep_irq_update(uint64_t pins) {
+    esp_err_t err = machine_sleep_irq_validate(&machine_rtc_config, pins);
+    return err == ESP_OK ? machine_sleep_irq_source(&machine_rtc_config, pins) : err;
+}
+
+void machine_sleep_irq_prepare(int pin, bool wake_high) {
+    #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_PM_SUPPORT_EXT1_WAKEUP
+    #if CONFIG_IDF_TARGET_ESP32
+    esp_sleep_ext1_wakeup_mode_t low = ESP_EXT1_WAKEUP_ALL_LOW;
+    #else
+    esp_sleep_ext1_wakeup_mode_t low = ESP_EXT1_WAKEUP_ANY_LOW;
+    #endif
+    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(1ULL << pin,
+        wake_high ? ESP_EXT1_WAKEUP_ANY_HIGH : low));
+    irq_ext1_pins |= 1ULL << pin;
+    #else
+    ESP_ERROR_CHECK(gpio_wakeup_enable(pin, wake_high ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL));
+    #endif
+}
+
+void machine_sleep_irq_finish(int pin) {
+    #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_PM_SUPPORT_EXT1_WAKEUP
+    if (irq_ext1_pins & (1ULL << pin)) {
+        // Undo even a rejected/skipped sleep; restore the digital mux before
+        // machine_pin reads the input and re-enables its CPU interrupt.
+        #if SOC_RTCIO_HOLD_SUPPORTED
+        ESP_ERROR_CHECK(rtc_gpio_hold_dis(pin));
+        #endif
+        ESP_ERROR_CHECK(rtc_gpio_deinit(pin));
+        ESP_ERROR_CHECK(esp_sleep_disable_ext1_wakeup_io(1ULL << pin));
+        irq_ext1_pins &= ~(1ULL << pin);
+    }
+    #else
+    ESP_ERROR_CHECK(gpio_wakeup_disable(pin));
+    #endif
 }
 
 void machine_sleep_clear(void) {
@@ -349,10 +414,7 @@ esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wa
     machine_sleep_clear();
     esp_err_t err = machine_sleep_install(config, wake_type);
     if (err == ESP_OK && automatic && machine_pin_irq_mask()) {
-        err = esp_sleep_enable_gpio_wakeup();
-        if (err == ESP_OK) {
-            installed_sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
-        }
+        err = machine_sleep_irq_source(config, machine_pin_irq_mask());
     }
     if (err != ESP_OK) {
         machine_sleep_clear();

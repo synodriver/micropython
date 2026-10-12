@@ -347,8 +347,11 @@ documentation.
 With automatic light sleep enabled, a normal input ``Pin.irq(handler=...,
 trigger=...)`` also configures wakeup during idle sleep. Do not additionally
 configure an explicit sleep wakeup source on that pin. This requires PM sleep
-callbacks and a powered digital GPIO domain. Unsupported configurations raise
-``OSError``; no EXT1 fallback is performed.
+callbacks. Builds retaining the digital GPIO domain use GPIO wakeup. Builds
+powering it down use EXT1 for valid RTC wakeup inputs; other inputs raise
+``OSError``. On chips with a shared EXT1 polarity, this fallback supports only
+one ordinary IRQ input and no additional explicit EXT1 inputs. The default
+build configuration is unchanged.
 
 ``Pin.IRQ_LOW_LEVEL`` and ``Pin.IRQ_HIGH_LEVEL`` are aliases of ``WAKE_LOW`` and
 ``WAKE_HIGH``. In automatic mode they notify once per observed active interval,

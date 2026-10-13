@@ -108,7 +108,10 @@ def declarations(parser, source, names):
         try:
             result.append(check_lightsleep.declarations(parser, source, (name,)))
         except ValueError:
-            matches = re.findall(r"\b(?:bool|void|int)\s+" + name + r"\s*\([^;{}]*\)\s*;", source)
+            matches = re.findall(
+                r"\b(?:bool|void|int|uint64_t|gpio_num_t)\s+" + name + r"\s*\([^;{}]*\)\s*;",
+                source,
+            )
             if len(matches) != 1:
                 raise
             result.extend(matches)
@@ -254,6 +257,9 @@ def main():
                     f"CONFIG_PM_LIGHT_SLEEP_CALLBACKS {callbacks}",
                     f"CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP {peripheral_pd}",
                     f"ESP_IDF_VERSION_MAJOR {major}",
+                    f"ESP_IDF_VERSION_MINOR {int(args.idf_tag.split('.')[1])}",
+                    "ESP_IDF_VERSION_VAL(a,b,c) (((a) << 16) | ((b) << 8) | (c))",
+                    "ESP_IDF_VERSION ESP_IDF_VERSION_VAL(ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, 0)",
                     "CONFIG_FREERTOS_USE_TICKLESS_IDLE 1",
                     f"CONFIG_FREERTOS_NUMBER_OF_CORES {2 if chip in ('esp32', 'esp32s3', 'esp32p4') else 1}",
                     f"SOC_CAPS_ECO_VER {0 if hw == 'hw_ver1' else 3}",
@@ -336,6 +342,7 @@ def main():
                             "esp_sleep_enable_ext1_wakeup",
                             "esp_sleep_enable_ext1_wakeup_io",
                             "esp_sleep_disable_ext1_wakeup_io",
+                            "esp_sleep_get_ext1_wakeup_status",
                         ),
                     )
                 if capable("SOC_RTCIO_PIN_COUNT > 0"):
@@ -347,6 +354,10 @@ def main():
                 if capable("SOC_ULP_SUPPORTED"):
                     sdk_types += sdk("sleep", ("esp_sleep_enable_ulp_wakeup",))
                 if capable("SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP"):
+                    if capable("SOC_DEEP_SLEEP_SUPPORTED"):
+                        sdk_types += sdk("sleep", ("esp_sleep_get_gpio_wakeup_status",))
+                        if (major, int(args.idf_tag.split(".")[1])) >= (6, 1):
+                            sdk_types += sdk("sleep", ("esp_sleep_wakeup_io_bit2num",))
                     if major >= 6:
                         sdk_types += sdk(
                             "sleep",

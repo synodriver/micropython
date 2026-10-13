@@ -317,6 +317,21 @@ is scheduled, with no hard real-time guarantee. Use ``asyncio.ThreadSafeFlag``
 to notify a coroutine. Disabling automatic sleep restores the original IRQ
 trigger and ordinary scheduling, including repeated level interrupts.
 
+Wakeup resources installed by this port are tracked separately from the saved
+user configuration and the temporary IRQ wakeup inputs. Known conflicts are
+validated before replacing a working configuration. EXT1 updates remove only
+the inputs owned by this port. Native drivers must not reconfigure the same
+inputs concurrently. No UART, radio or external peripheral is required.
+Manual sleep clears all SDK wakeup sources and resets the saved EXT1 input set
+before installing its configuration, so disabled inputs are not re-enabled by
+the incremental EXT1 API.
+
+``machine.wake_pins()`` continues to return GPIO numbers in a tuple, including
+conversion from RTC IO indices on IDF 6.1. In automatic mode its SDK reads are
+protected from another automatic sleep attempt. This is saved SDK wakeup status,
+not an IRQ event queue or proof that the latest automatic sleep succeeded.
+The automatic IRQ adapter does not use it to synthesize callbacks.
+
 GPIO wakeup shares the pin's interrupt trigger setting. EXT wakeup
 pins should be dedicated digital inputs, not shared with RTC peripherals or
 application-managed hold settings.  The port restores their digital function

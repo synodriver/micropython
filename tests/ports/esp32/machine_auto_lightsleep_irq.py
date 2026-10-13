@@ -149,6 +149,30 @@ try:
     rejected(lambda: machine.freq(hz, hz, True))
     assert p.irq().trigger() == Pin.IRQ_RISING
     print("enable validation OK")
+
+    esp32.wake_on_gpio(pins=[])
+    p.irq(handler=None)
+    for _ in range(3):
+        wake_source(pins=(p,), level=esp32.WAKEUP_ANY_HIGH)
+        machine.freq(hz, hz, True)
+        rejected(lambda: p.irq(handler=handler, trigger=Pin.IRQ_RISING))
+        # Remove the explicit owner, then acquire the same input for IRQ use.
+        wake_source(pins=[])
+        irq = p.irq(handler=handler, trigger=Pin.IRQ_RISING)
+        hits.clear()
+        time.sleep_ms(150)
+        assert hits == []
+        irq()
+        time.sleep_ms(30)
+        assert hits == [p]
+        assert irq.trigger() == Pin.IRQ_RISING
+        wake_pins = machine.wake_pins()
+        assert isinstance(wake_pins, tuple)
+        assert all(isinstance(pin, int) for pin in wake_pins)
+        assert tuple(sorted(set(wake_pins))) == wake_pins
+        p.irq(handler=None)
+        machine.freq(hz)
+    print("repeated wake resource handover and query compatibility OK")
 finally:
     p.irq(handler=None)
     machine.freq(hz)

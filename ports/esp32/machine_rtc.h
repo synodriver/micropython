@@ -66,6 +66,7 @@ void machine_sleep_clear(void);
 void machine_sleep_restore_pins(void);
 void machine_sleep_set_config(const machine_rtc_config_t *config);
 void machine_sleep_deinit(void);
+uint64_t machine_sleep_wake_pins(void);
 
 // Ordinary Pin IRQs temporarily use GPIO or EXT1 during automatic light sleep.
 // Configuration functions run with the VM GIL and the configuration PM lock.

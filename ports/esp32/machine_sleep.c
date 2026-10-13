@@ -22,20 +22,35 @@
 #include "py/mphal.h"
 #include "machine_rtc.h"
 
-// Only sources installed by this module are removed. In particular, automatic
-// updates must leave timer, UART and radio wakeup sources alone.
-static uint32_t installed_sources;
-static uint64_t installed_gpio_pins;
-static uint64_t installed_deep_gpio_pins;
-static uint64_t installed_rtc_pins;
+// Wake resources owned by this port. User configuration remains in
+// machine_rtc_config; this structure describes the currently installed SDK
+// state and is the only state machine_sleep_clear() is allowed to remove.
+typedef struct {
+    uint32_t sources;
+    uint64_t gpio_pins;
+    uint64_t deep_gpio_pins;
+    uint64_t rtc_pins;
+    uint64_t ext1_pins;
+    uint64_t temporary_pins;
+} machine_sleep_resources_t;
+
+static machine_sleep_resources_t sleep_resources;
 static gpio_int_type_t saved_irq_type[GPIO_NUM_MAX];
 static uint32_t saved_sleep_config[GPIO_NUM_MAX];
 static gpio_int_type_t installed_irq_type;
-// Temporary EXT1 inputs belong to the current automatic sleep attempt, not to
-// machine_rtc_config. Keep explicit wake sources intact when undoing them.
-#if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_PM_SUPPORT_EXT1_WAKEUP
-static uint64_t irq_ext1_pins;
-#endif
+
+static uint64_t machine_sleep_rtc_pins(const machine_rtc_config_t *config, wake_type_t wake_type) {
+    uint64_t pins = 0;
+    #if SOC_PM_SUPPORT_EXT0_WAKEUP
+    if (config->ext0_pin != -1 && (config->ext0_wake_types & wake_type)) {
+        pins |= 1ULL << config->ext0_pin;
+    }
+    #endif
+    #if SOC_PM_SUPPORT_EXT1_WAKEUP
+    pins |= config->ext1_pins;
+    #endif
+    return pins;
+}
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t config_lock;
@@ -64,7 +79,7 @@ void machine_sleep_unlock(void) {
 void machine_sleep_restore_pins(void) {
     #if SOC_RTCIO_PIN_COUNT > 0
     for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
-        if (installed_rtc_pins & (1ULL << pin)) {
+        if (sleep_resources.rtc_pins & (1ULL << pin)) {
             #if SOC_RTCIO_HOLD_SUPPORTED
             rtc_gpio_hold_dis(pin);
             #endif
@@ -117,15 +132,7 @@ static esp_err_t machine_sleep_irq_validate(const machine_rtc_config_t *config, 
     (void)config;
     return ESP_ERR_NOT_SUPPORTED;
     #else
-    uint64_t explicit_pins = config->gpio_pins;
-    #if SOC_PM_SUPPORT_EXT0_WAKEUP
-    if (config->ext0_pin != -1 && (config->ext0_wake_types & MACHINE_WAKE_SLEEP)) {
-        explicit_pins |= 1ULL << config->ext0_pin;
-    }
-    #endif
-    #if SOC_PM_SUPPORT_EXT1_WAKEUP
-    explicit_pins |= config->ext1_pins;
-    #endif
+    uint64_t explicit_pins = config->gpio_pins | machine_sleep_rtc_pins(config, MACHINE_WAKE_SLEEP);
     if (pins & explicit_pins) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -161,15 +168,15 @@ static esp_err_t machine_sleep_irq_source(const machine_rtc_config_t *config, ui
     if (pins || config->gpio_pins) {
         err = esp_sleep_enable_gpio_wakeup();
         if (err == ESP_OK) {
-            installed_sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
+            sleep_resources.sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
         }
-    } else if (installed_sources & (1U << ESP_SLEEP_WAKEUP_GPIO)) {
+    } else if (sleep_resources.sources & (1U << ESP_SLEEP_WAKEUP_GPIO)) {
         err = esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
         if (err == ESP_ERR_INVALID_STATE) {
             err = ESP_OK;
         }
         if (err == ESP_OK) {
-            installed_sources &= ~(1U << ESP_SLEEP_WAKEUP_GPIO);
+            sleep_resources.sources &= ~(1U << ESP_SLEEP_WAKEUP_GPIO);
         }
     }
     return err;
@@ -189,34 +196,39 @@ void machine_sleep_irq_prepare(int pin, bool wake_high) {
     #endif
     ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(1ULL << pin,
         wake_high ? ESP_EXT1_WAKEUP_ANY_HIGH : low));
-    irq_ext1_pins |= 1ULL << pin;
     #else
     ESP_ERROR_CHECK(gpio_wakeup_enable(pin, wake_high ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL));
     #endif
+    sleep_resources.temporary_pins |= 1ULL << pin;
 }
 
 void machine_sleep_irq_finish(int pin) {
-    #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_PM_SUPPORT_EXT1_WAKEUP
-    if (irq_ext1_pins & (1ULL << pin)) {
-        // Undo even a rejected/skipped sleep; restore the digital mux before
-        // machine_pin reads the input and re-enables its CPU interrupt.
-        #if SOC_RTCIO_HOLD_SUPPORTED
-        ESP_ERROR_CHECK(rtc_gpio_hold_dis(pin));
-        #endif
-        ESP_ERROR_CHECK(rtc_gpio_deinit(pin));
-        ESP_ERROR_CHECK(esp_sleep_disable_ext1_wakeup_io(1ULL << pin));
-        irq_ext1_pins &= ~(1ULL << pin);
+    if (!(sleep_resources.temporary_pins & (1ULL << pin))) {
+        return;
     }
+    #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_PM_SUPPORT_EXT1_WAKEUP
+    // Undo even a rejected/skipped sleep; restore the digital mux before
+    // machine_pin reads the input and re-enables its CPU interrupt.
+    #if SOC_RTCIO_HOLD_SUPPORTED
+    ESP_ERROR_CHECK(rtc_gpio_hold_dis(pin));
+    #endif
+    ESP_ERROR_CHECK(rtc_gpio_deinit(pin));
+    ESP_ERROR_CHECK(esp_sleep_disable_ext1_wakeup_io(1ULL << pin));
     #else
     ESP_ERROR_CHECK(gpio_wakeup_disable(pin));
     #endif
+    sleep_resources.temporary_pins &= ~(1ULL << pin);
 }
 
 void machine_sleep_clear(void) {
+    // Restore per-attempt pin state through its owner, including CPU IRQ and
+    // sleep selection, before removing the persistent wake sources. The PM
+    // configuration lock serialises this with entry/exit callbacks.
+    machine_pin_irq_sleep_exit();
     // Also undo per-pin wake enables: disabling the global GPIO source alone
     // leaves them armed, causing removed pins to wake a subsequent sleep.
     for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
-        if (installed_gpio_pins & (1ULL << pin)) {
+        if (sleep_resources.gpio_pins & (1ULL << pin)) {
             ESP_ERROR_CHECK(gpio_wakeup_disable(pin));
             // The SDK wake APIs change sleep selection, and installation changes
             // sleep direction. Undo both, including after a failed installation.
@@ -236,7 +248,7 @@ void machine_sleep_clear(void) {
             }
         }
         #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-        if (installed_deep_gpio_pins & (1ULL << pin)) {
+        if (sleep_resources.deep_gpio_pins & (1ULL << pin)) {
             #if ESP_IDF_VERSION_MAJOR >= 6
             ESP_ERROR_CHECK(gpio_wakeup_disable_on_hp_periph_powerdown_sleep(pin));
             #else
@@ -245,10 +257,14 @@ void machine_sleep_clear(void) {
         }
         #endif
     }
-    installed_gpio_pins = 0;
-    installed_deep_gpio_pins = 0;
+    #if SOC_PM_SUPPORT_EXT1_WAKEUP
+    if (sleep_resources.ext1_pins) {
+        ESP_ERROR_CHECK(esp_sleep_disable_ext1_wakeup_io(sleep_resources.ext1_pins));
+        sleep_resources.sources &= ~(1U << ESP_SLEEP_WAKEUP_EXT1);
+    }
+    #endif
     for (int source = 0; source < 32; ++source) {
-        if (installed_sources & (1U << source)) {
+        if (sleep_resources.sources & (1U << source)) {
             // Manual sleep may already have disabled all SDK wakeup sources.
             esp_err_t err = esp_sleep_disable_wakeup_source(source);
             if (err != ESP_ERR_INVALID_STATE) {
@@ -256,8 +272,7 @@ void machine_sleep_clear(void) {
             }
         }
     }
-    installed_sources = 0;
-    installed_rtc_pins = 0;
+    memset(&sleep_resources, 0, sizeof(sleep_resources));
 }
 
 static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_type_t wake_type) {
@@ -268,8 +283,8 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
         if (err != ESP_OK) {
             return err;
         }
-        installed_sources |= 1U << ESP_SLEEP_WAKEUP_EXT0;
-        installed_rtc_pins |= 1ULL << config->ext0_pin;
+        sleep_resources.sources |= 1U << ESP_SLEEP_WAKEUP_EXT0;
+        sleep_resources.rtc_pins |= 1ULL << config->ext0_pin;
     }
     #endif
     #if SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -279,13 +294,14 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
         #else
         esp_sleep_ext1_wakeup_mode_t low = ESP_EXT1_WAKEUP_ANY_LOW;
         #endif
-        err = esp_sleep_enable_ext1_wakeup(config->ext1_pins,
+        err = esp_sleep_enable_ext1_wakeup_io(config->ext1_pins,
             config->ext1_level ? ESP_EXT1_WAKEUP_ANY_HIGH : low);
         if (err != ESP_OK) {
             return err;
         }
-        installed_sources |= 1U << ESP_SLEEP_WAKEUP_EXT1;
-        installed_rtc_pins |= config->ext1_pins;
+        sleep_resources.sources |= 1U << ESP_SLEEP_WAKEUP_EXT1;
+        sleep_resources.rtc_pins |= config->ext1_pins;
+        sleep_resources.ext1_pins = config->ext1_pins;
     }
     #endif
     #if SOC_TOUCH_SENSOR_SUPPORTED
@@ -294,7 +310,7 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
         if (err != ESP_OK) {
             return err;
         }
-        installed_sources |= 1U << ESP_SLEEP_WAKEUP_TOUCHPAD;
+        sleep_resources.sources |= 1U << ESP_SLEEP_WAKEUP_TOUCHPAD;
     }
     #endif
     #if SOC_ULP_SUPPORTED
@@ -303,18 +319,13 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
         if (err != ESP_OK) {
             return err;
         }
-        installed_sources |= 1U << ESP_SLEEP_WAKEUP_ULP;
+        sleep_resources.sources |= 1U << ESP_SLEEP_WAKEUP_ULP;
     }
     #endif
     if (config->gpio_pins) {
         if (wake_type == MACHINE_WAKE_DEEPSLEEP) {
             #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-            for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
-                if ((config->gpio_pins & (1ULL << pin)) && !esp_sleep_is_valid_wakeup_gpio(pin)) {
-                    return ESP_ERR_INVALID_ARG;
-                }
-            }
-            installed_deep_gpio_pins = config->gpio_pins;
+            sleep_resources.deep_gpio_pins = config->gpio_pins;
             #if ESP_IDF_VERSION_MAJOR >= 6
             err = esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(config->gpio_pins,
                 config->gpio_level ? ESP_GPIO_WAKEUP_GPIO_HIGH : ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -339,7 +350,7 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
                 if (config->gpio_pins & (1ULL << pin)) {
                     saved_irq_type[pin] = GPIO.pin[pin].int_type;
                     saved_sleep_config[pin] = machine_sleep_gpio_config(pin);
-                    installed_gpio_pins |= 1ULL << pin;
+                    sleep_resources.gpio_pins |= 1ULL << pin;
                     err = gpio_sleep_set_direction(pin, GPIO_MODE_INPUT);
                     if (err == ESP_OK) {
                         err = gpio_wakeup_enable(pin, installed_irq_type);
@@ -355,15 +366,13 @@ static esp_err_t machine_sleep_install(const machine_rtc_config_t *config, wake_
             }
             #endif
         }
-        installed_sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
+        sleep_resources.sources |= 1U << ESP_SLEEP_WAKEUP_GPIO;
     }
     return ESP_OK;
 }
 
-// Call with the configuration PM lock held (or with automatic sleep disabled).
-// Failure leaves no partially installed sources. The caller can restore its
-// previous configuration before releasing the lock.
-esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wake_type, bool automatic) {
+// Validate ownership/capabilities without changing any installed SDK state.
+static esp_err_t machine_sleep_validate(const machine_rtc_config_t *config, wake_type_t wake_type, bool automatic) {
     if (automatic) {
         esp_err_t err = machine_sleep_irq_validate(config, machine_pin_irq_mask());
         if (err != ESP_OK) {
@@ -378,17 +387,42 @@ esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wa
     }
     #endif
     // A pin cannot simultaneously use RTC muxing and digital GPIO wakeup.
-    uint64_t rtc_pins = 0;
-    #if SOC_PM_SUPPORT_EXT0_WAKEUP
-    if (config->ext0_pin != -1 && (config->ext0_wake_types & wake_type)) {
-        rtc_pins |= 1ULL << config->ext0_pin;
-    }
-    #endif
-    #if SOC_PM_SUPPORT_EXT1_WAKEUP
-    rtc_pins |= config->ext1_pins;
-    #endif
+    uint64_t rtc_pins = machine_sleep_rtc_pins(config, wake_type);
     if (rtc_pins & config->gpio_pins) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (config->gpio_pins) {
+        if (wake_type == MACHINE_WAKE_DEEPSLEEP) {
+            #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
+            for (int pin = 0; pin < GPIO_NUM_MAX; ++pin) {
+                if ((config->gpio_pins & (1ULL << pin)) && !esp_sleep_is_valid_wakeup_gpio(pin)) {
+                    return ESP_ERR_INVALID_ARG;
+                }
+            }
+            #else
+            return ESP_ERR_NOT_SUPPORTED;
+            #endif
+        } else {
+            #if CONFIG_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP
+            return ESP_ERR_NOT_SUPPORTED;
+            #endif
+        }
+    }
+    #if !CONFIG_PM_LIGHT_SLEEP_CALLBACKS
+    if (automatic && rtc_pins) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    #endif
+    return ESP_OK;
+}
+
+// Call with the configuration PM lock held (or with automatic sleep disabled).
+// Validation failure preserves installed resources. An installation failure
+// removes partial resources, then the configuration setter restores the old set.
+esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wake_type, bool automatic) {
+    esp_err_t err = machine_sleep_validate(config, wake_type, automatic);
+    if (err != ESP_OK) {
+        return err;
     }
     #if CONFIG_PM_LIGHT_SLEEP_CALLBACKS
     static bool callback_registered;
@@ -406,13 +440,9 @@ esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wa
         }
         callback_registered = true;
     }
-    #else
-    if (automatic && rtc_pins) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
     #endif
     machine_sleep_clear();
-    esp_err_t err = machine_sleep_install(config, wake_type);
+    err = machine_sleep_install(config, wake_type);
     if (err == ESP_OK && automatic && machine_pin_irq_mask()) {
         err = machine_sleep_irq_source(config, machine_pin_irq_mask());
     }
@@ -425,6 +455,13 @@ esp_err_t machine_sleep_apply(const machine_rtc_config_t *config, wake_type_t wa
 void machine_sleep_set_config(const machine_rtc_config_t *config) {
     if (machine_auto_lightsleep_enabled()) {
         check_esp_err(machine_sleep_lock());
+        // Reject known conflicts without tearing down and reinstalling the
+        // working configuration. Runtime SDK failures still use rollback below.
+        esp_err_t validation = machine_sleep_validate(config, MACHINE_WAKE_SLEEP, true);
+        if (validation != ESP_OK) {
+            machine_sleep_unlock();
+            check_esp_err(validation);
+        }
         esp_err_t err = machine_sleep_apply(config, MACHINE_WAKE_SLEEP, true);
         if (err != ESP_OK) {
             // A previously installed configuration must remain usable on error.
@@ -451,4 +488,40 @@ void machine_sleep_deinit(void) {
     #if SOC_PM_SUPPORT_EXT0_WAKEUP
     machine_rtc_config.ext0_pin = -1;
     #endif
+}
+
+uint64_t machine_sleep_wake_pins(void) {
+    // The SDK status spans multiple registers. Prevent another automatic sleep
+    // from replacing them halfway through this Python-facing query.
+    bool automatic = machine_auto_lightsleep_enabled();
+    if (automatic) {
+        check_esp_err(machine_sleep_lock());
+    }
+    uint64_t pins = 0;
+    #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP && SOC_DEEP_SLEEP_SUPPORTED
+    uint64_t status = esp_sleep_get_gpio_wakeup_status();
+    #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 1, 0)
+    // IDF 6.1 returns RTC IO indices for this source, not GPIO numbers. Do not
+    // interpret the raw bitmap as GPIOs (e.g. RTC IO 0 is GPIO36 on ESP32).
+    for (int bit = 0; bit < 64; ++bit) {
+        if (status & (1ULL << bit)) {
+            int pin = esp_sleep_wakeup_io_bit2num(bit);
+            if (pin >= 0 && pin < GPIO_NUM_MAX) {
+                pins |= 1ULL << pin;
+            }
+        }
+    }
+    #else
+    pins = status;
+    #endif
+    #endif
+    #if SOC_PM_SUPPORT_EXT1_WAKEUP && SOC_RTCIO_PIN_COUNT > 0
+    // This API already converts to GPIO numbering. Multiple sources may wake
+    // together; combine only the pin information the SDK can actually report.
+    pins |= esp_sleep_get_ext1_wakeup_status();
+    #endif
+    if (automatic) {
+        machine_sleep_unlock();
+    }
+    return pins;
 }

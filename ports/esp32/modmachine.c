@@ -245,6 +245,11 @@ static void machine_sleep_helper(wake_type_t wake_type, size_t n_args, const mp_
     }
     machine_sleep_clear();
     check_esp_err(esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL));
+    #if SOC_PM_SUPPORT_EXT1_WAKEUP
+    // WAKEUP_ALL only clears trigger bits; the incremental EXT1 installer
+    // would otherwise re-enable an old SDK pin set along with our inputs.
+    check_esp_err(esp_sleep_disable_ext1_wakeup_io(0));
+    #endif
     esp_err_t err = machine_sleep_apply(&machine_rtc_config, wake_type, false);
     if (err == ESP_OK && n_args != 0) {
         err = esp_sleep_enable_timer_wakeup((uint64_t)expiry * 1000);
@@ -378,18 +383,8 @@ static mp_obj_t machine_wake_reason(size_t n_args, const mp_obj_t *pos_args, mp_
 static MP_DEFINE_CONST_FUN_OBJ_KW(machine_wake_reason_obj, 0,  machine_wake_reason);
 
 static mp_obj_t machine_wake_pins(void) {
-    uint64_t status = 0;
+    uint64_t status = machine_sleep_wake_pins();
     int len, index;
-
-    // There will be only one wake-up source, so it is OK to logically OR all the
-    // wake-up source statuses.
-    #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP && SOC_DEEP_SLEEP_SUPPORTED
-    status |= esp_sleep_get_gpio_wakeup_status();
-    #endif
-
-    #if SOC_PM_SUPPORT_EXT1_WAKEUP && SOC_RTCIO_PIN_COUNT > 0
-    status |= esp_sleep_get_ext1_wakeup_status();
-    #endif
 
     // Only a few (~8) pins might cause wakeup.
     // Therefore, we calculate the required space in a first pass.

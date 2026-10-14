@@ -49,6 +49,18 @@ for option in CONFIG_SOC_BLE_50_SUPPORTED CONFIG_BT_NIMBLE_ENABLED CONFIG_BT_CON
         exit 1
     fi
 done
+case "${variant}" in
+    BLEMESH*)
+        for option in CONFIG_SOC_BLE_MESH_SUPPORTED CONFIG_BLE_MESH CONFIG_BLE_MESH_USE_BLE_50 CONFIG_BLE_MESH_PB_ADV; do
+            if ! grep -Fxq "${option}=y" ports/esp32/build-ble5/sdkconfig; then
+                echo "Required Mesh configuration missing: ${option}" >&2
+                exit 1
+            fi
+        done
+        test -f ports/esp32/build-ble5/blemesh/adapter.c
+        test -f ports/esp32/build-ble5/blemesh/adv.c
+        ;;
+esac
 ble5_source=$(find ports/esp32/build-ble5 -name modbluetooth_esp32.c -print -quit)
 test -n "${ble5_source}"
 grep -Fq "MP_QSTR_gap_advertise_ext" "${ble5_source}"
@@ -76,5 +88,14 @@ printf "%s\n" \
     "micropython.bin is the application only; it is not a combined image." \
     "See ports/esp32/README.ble5.md in the source for the BLE 5 API." \
     > ports/esp32/artifacts/README.txt
+case "${variant}" in
+    BLEMESH*)
+        printf "%s\n" \
+            "BLE Mesh: PB-ADV node and Vendor model, sharing the BLE 5 Host/controller." \
+            "Advertising: application instances 0..3; private Mesh instance 4." \
+            "See ports/esp32/blemesh/README.md for Mesh setup and aioble-mesh installation." \
+            >> ports/esp32/artifacts/README.txt
+        ;;
+esac
 cd ports/esp32/artifacts
 sha256sum firmware.bin micropython.bin sdkconfig > SHA256SUMS

@@ -98,6 +98,15 @@ def generate(micropython, output):
     backend = replace_once(backend, anchor, anchor + "\n    esp32_ble5_reset();")
     anchor = "static void reset_cb(int reason) {\n"
     backend = replace_once(backend, anchor, anchor + "    esp32_ble5_reset();\n")
+    backend = replace_once(backend, anchor, anchor + "    #if CONFIG_BLE_MESH\n    esp32_blemesh_radio_reset();\n    #endif\n")
+    anchor = "static void sync_cb(void) {\n"
+    backend = replace_once(backend, anchor, anchor + "    #if CONFIG_BLE_MESH\n    esp32_blemesh_radio_sync();\n    #endif\n")
+    anchor = "static int peripheral_gap_event_cb(struct ble_gap_event *event, void *arg) {\n"
+    backend = replace_once(backend, anchor, anchor + "    #if CONFIG_BLE_MESH\n    if (event->type == BLE_GAP_EVENT_CONNECT) {\n        esp32_blemesh_connect_resume();\n    }\n    #endif\n")
+    anchor = "    int err = ble_gap_conn_cancel();"
+    backend = replace_once(backend, anchor, anchor + "\n    #if CONFIG_BLE_MESH\n    if (!err) {\n        esp32_blemesh_connect_resume();\n    }\n    #endif")
+    anchor = "        ret = mp_bluetooth_nimble_port_shutdown();"
+    backend = replace_once(backend, anchor, anchor + "\n        #if CONFIG_BLE_MESH\n        if (ret) {\n            return ret;\n        }\n        #endif")
     for name in ("mp_bluetooth_init", "mp_bluetooth_deinit"):
         anchor = f"int {name}(void) {{\n"
         backend = replace_once(

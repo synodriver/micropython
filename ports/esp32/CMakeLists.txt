@@ -57,6 +57,9 @@ endif()
 # ESP32-P4's optional remote controller must keep its existing configuration.
 if(IDF_TARGET MATCHES "^(esp32s3|esp32c2|esp32c3|esp32c5|esp32c6|esp32h2)$")
     list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble5)
+    if(NOT IDF_TARGET STREQUAL "esp32s3" AND NOT IDF_TARGET STREQUAL "esp32c3")
+        list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble5_nimble_controller)
+    endif()
 endif()
 
 # BLE controller sleep tuning is separate from BLE 5. It is only selected for
@@ -73,6 +76,10 @@ elseif(IDF_TARGET STREQUAL "esp32c6")
 endif()
 
 # Concatenate all sdkconfig files into a combined one for the IDF to use.
+if(MICROPY_ESP32_BLEMESH)
+    list(APPEND SDKCONFIG_DEFAULTS ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.blemesh)
+endif()
+
 file(WRITE ${CMAKE_BINARY_DIR}/sdkconfig.combined.in "")
 foreach(SDKCONFIG_DEFAULT ${SDKCONFIG_DEFAULTS})
     file(READ ${SDKCONFIG_DEFAULT} CONTENTS)
@@ -90,6 +97,10 @@ idf_build_set_property(DEPENDENCIES_LOCK ${LOCKFILE_PATH})
 
 # Define the project.
 project(micropython)
+
+if(MICROPY_ESP32_BLEMESH OR CONFIG_BLE_MESH)
+    include(${CMAKE_CURRENT_LIST_DIR}/blemesh/idf.cmake)
+endif()
 
 # Check for lockfile changes and either warn or error depending on build type
 message("Checking lockfile contents...")

@@ -3,6 +3,13 @@
 #include "host/ble_hs_mbuf.h"
 #include "py/mpthread.h"
 
+#if CONFIG_BLE_MESH
+// Only this translation unit's application operations use subscriber 0.
+#define ble_gap_ext_disc esp32_blemesh_app_scan
+#define ble_gap_disc_cancel esp32_blemesh_app_scan_cancel
+#define ble_gap_disc_active esp32_blemesh_app_scan_active
+#endif
+
 #if MICROPY_ESP32_BLE5_PERIODIC_ADV
 static void esp32_ble5_periodic_reset(void);
 static uint32_t esp32_ble5_gap_generation(void);
@@ -87,7 +94,7 @@ static esp32_ble5_state_t *esp32_ble5_state(void) {
 }
 
 static bool esp32_ble5_valid_instance(int instance, bool legacy) {
-    return instance >= (legacy ? 0 : 1) && instance < BLE_ADV_INSTANCES;
+    return instance >= (legacy ? 0 : 1) && instance < ESP32_BLE_PUBLIC_ADV_INSTANCES;
 }
 
 static int esp32_ble5_set_data(int instance, const uint8_t *data, size_t len, bool response) {
@@ -452,11 +459,22 @@ int esp32_ble5_connect(uint8_t addr_type, const uint8_t *addr, int duration_ms, 
     callback = esp32_ble5_gap_cb;
     callback_arg = (void *)(uintptr_t)esp32_ble5_gap_generation();
     #endif
+    #if CONFIG_BLE_MESH
+    int pause_error = esp32_blemesh_connect_pause();
+    if (pause_error) {
+        return ble_hs_err_to_errno(pause_error);
+    }
+    #endif
     int err = ble_gap_ext_connect(nimble_address_mode, &peer, duration_ms, phys,
         (phys & BLE_GAP_LE_PHY_1M_MASK) ? &params : NULL,
         (phys & BLE_GAP_LE_PHY_2M_MASK) ? &params : NULL,
         (phys & BLE_GAP_LE_PHY_CODED_MASK) ? &params : NULL,
         callback, callback_arg);
+    #if CONFIG_BLE_MESH
+    if (err) {
+        esp32_blemesh_connect_resume();
+    }
+    #endif
     return ble_hs_err_to_errno(err);
 }
 

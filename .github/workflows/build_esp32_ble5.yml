@@ -1,4 +1,4 @@
-name: Build ESP32 BLE 5 firmware
+name: Build ESP32 BLE 5 and Mesh firmware
 
 on:
   workflow_dispatch:
@@ -36,6 +36,24 @@ jobs:
           - target: esp32h2
             board: ESP32_GENERIC_H2
             variant: ""
+          - target: esp32s3
+            board: ESP32_GENERIC_S3
+            variant: BLEMESH
+          - target: esp32s3
+            board: ESP32_GENERIC_S3
+            variant: BLEMESH_SPIRAM_OCT
+          - target: esp32c3
+            board: ESP32_GENERIC_C3
+            variant: BLEMESH
+          - target: esp32c5
+            board: ESP32_GENERIC_C5
+            variant: BLEMESH
+          - target: esp32c6
+            board: ESP32_GENERIC_C6
+            variant: BLEMESH
+          - target: esp32h2
+            board: ESP32_GENERIC_H2
+            variant: BLEMESH
 
     steps:
       - name: Check out source

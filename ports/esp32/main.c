@@ -63,6 +63,7 @@
 #include "usb_serial_jtag.h"
 #include "modesp32.h"
 #include "modmachine.h"
+#include "blemesh/blemesh.h"
 #include "modnetwork.h"
 #if MICROPY_PY_NETWORK_WLAN_CSI
 #include "network_wlan_csi.h"
@@ -141,6 +142,9 @@ soft_reset:
     mp_cstack_init_with_top((void *)sp, MICROPY_TASK_STACK_SIZE);
     gc_init(mp_task_heap, mp_task_heap + MICROPY_GC_INITIAL_HEAP_SIZE);
     mp_init();
+    #if CONFIG_BLE_MESH
+    esp32_blemesh_vm_init();
+    #endif
     mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_lib));
     readline_init0();
 
@@ -191,7 +195,15 @@ soft_reset_exit:
     machine_disable_auto_lightsleep();
 
     #if MICROPY_BLUETOOTH_NIMBLE
+    #if CONFIG_BLE_MESH
+    if (mp_bluetooth_deinit() != 0) {
+        // Do not free the VM while a failed native Mesh shutdown can still
+        // reach the Bluetooth callbacks. A hardware restart preserves NVS.
+        esp_restart();
+    }
+    #else
     mp_bluetooth_deinit();
+    #endif
     #endif
 
     #if MICROPY_PY_ESPNOW

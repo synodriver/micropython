@@ -66,6 +66,14 @@ The ESP-IDF changes quickly and MicroPython only supports certain versions. The
 current recommended version of ESP-IDF for MicroPython is v5.5.5. MicroPython
 also supports v5.3, v5.4, v5.4.1, v5.4.2, v5.5.1, v5.5.2 and v5.5.4.
 
+This branch's optional ESP32-C3/C5/C6/H2/S3 `BLEMESH` variants accept IDF v5.5.x
+(>=5.5.3; C5 requires >=5.5.5) and v6.1.x, with v5.5.5 recommended; see [BLE Mesh](blemesh/README.md)
+for validation scope and the v5.5.3 periodic sync restriction. Both BLE5 and Mesh
+profiles set `CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4` (five total instances).
+BLE5 exposes application handles 0..4; Mesh exposes 0..3 and reserves physical
+instance 4. The SDK configuration maximum is 4, so Mesh cannot simply use 5.
+Check `ble5_features()["advertising_instances"]` for the public capacity.
+
 <!-- Important: If updating the above, please also update:
      * IDF_OLDEST_VER & IDF_NEWEST_VER in .github/workflows/port_esp32.yml
      * minimum version at bottom of main/idf_component.yml

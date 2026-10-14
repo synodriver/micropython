@@ -4,6 +4,11 @@
 
 #include "extmod/modbluetooth.h"
 #include "soc/soc_caps.h"
+#include "blemesh/blemesh.h"
+
+#if !CONFIG_BLE_MESH
+#define ESP32_BLE_PUBLIC_ADV_INSTANCES BLE_ADV_INSTANCES
+#endif
 
 #if MICROPY_PY_BLUETOOTH && SOC_BLE_50_SUPPORTED && CONFIG_BT_NIMBLE_50_FEATURE_SUPPORT && !CONFIG_IDF_TARGET_ESP32P4
 #define MICROPY_ESP32_BLE5 (1)

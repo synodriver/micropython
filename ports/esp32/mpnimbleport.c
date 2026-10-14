@@ -73,6 +73,9 @@ void mp_bluetooth_nimble_port_hci_deinit(void) {
 
 void mp_bluetooth_nimble_port_start(void) {
     DEBUG_printf("mp_bluetooth_nimble_port_start\n");
+    #if CONFIG_BLE_MESH
+    esp32_blemesh_radio_init();
+    #endif
     #if MICROPY_ESP32_BLE5_PERIODIC_ADV
     esp32_ble5_periodic_init();
     #endif
@@ -81,6 +84,12 @@ void mp_bluetooth_nimble_port_start(void) {
 
 int mp_bluetooth_nimble_port_shutdown(void) {
     DEBUG_printf("mp_bluetooth_nimble_port_shutdown\n");
+    #if CONFIG_BLE_MESH
+    int mesh_error = esp32_blemesh_shutdown();
+    if (mesh_error) {
+        return mesh_error;
+    }
+    #endif
     #if MICROPY_ESP32_BLE5_PERIODIC_ADV
     esp32_ble5_periodic_disable();
     #endif
@@ -99,6 +108,9 @@ int mp_bluetooth_nimble_port_shutdown(void) {
     #endif
 
     // Shuts down the event queue.
+    #if CONFIG_BLE_MESH
+    esp32_blemesh_radio_deinit();
+    #endif
     nimble_port_deinit();
 
     #if MICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS_WITH_INTERLOCK

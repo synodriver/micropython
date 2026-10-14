@@ -2,6 +2,10 @@
 
 The MicroPython project
 =======================
+
+此分支的可选 BLE Mesh（与 BLE5 共存）见 [使用说明](ports/esp32/blemesh/README.md)
+和 [第一阶段设计审计](BLEMesh设计审计.md)。当前范围：ESP32-C3/C5/C6/H2/S3、PB-ADV；IDF 5.5.x ≥5.5.3（C5 ≥5.5.5）或 6.1.x，推荐 5.5.5。尚待固件构建及实机验收。
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/micropython/micropython/master/logo/upython-with-micro.jpg" alt="MicroPython Logo"/>
 </p>

@@ -24,7 +24,7 @@ static mp_obj_t bluetooth_ble5_features(mp_obj_t self_in) {
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power_set), mp_const_true);
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power_get), mp_const_true);
     #if MICROPY_ESP32_BLE5_EXT_ADV
-    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_advertising_instances), MP_OBJ_NEW_SMALL_INT(BLE_ADV_INSTANCES));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_advertising_instances), MP_OBJ_NEW_SMALL_INT(ESP32_BLE_PUBLIC_ADV_INSTANCES));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_max_adv_data_len), MP_OBJ_NEW_SMALL_INT(MYNEWT_VAL(BLE_EXT_ADV_MAX_SIZE)));
     #endif
     return result;

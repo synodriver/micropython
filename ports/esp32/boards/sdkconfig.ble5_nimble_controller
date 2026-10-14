@@ -1,0 +1,4 @@
+# C2/C5/C6/H2 controller fallback capacity: 1 + 4 instances.
+# With NimBLE enabled, esp_bt_cfg.h takes capacity from the Host setting.
+# C3/S3 use a different controller and do not define this Kconfig symbol.
+CONFIG_BT_LE_MAX_EXT_ADV_INSTANCES=4

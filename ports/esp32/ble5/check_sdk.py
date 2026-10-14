@@ -286,12 +286,14 @@ def npl_declarations(parser, npl_header, port_header):
 
 
 def check(
-    headers, hci_header, bt_header, compiler, idf_version, npl_header=None, port_header=None
+    headers, hci_header, bt_header, compiler, idf_version, npl_header=None, port_header=None, mesh=False
 ):
     parser = Parser(Language(tree_sitter_c.language()))
     power = power_declarations(parser, bt_header)
     directory = Path(__file__).resolve().parent
     header = (directory / "bluetooth_ble5.h").read_text(encoding="utf-8")
+    if mesh:
+        header = (directory.parent / "blemesh/blemesh.h").read_text(encoding="utf-8") + header
     backend = (directory / "bluetooth_ble5_nimble.c").read_text(encoding="utf-8")
     port = (directory.parent / "mpnimbleport.c").read_text(encoding="utf-8")
     bindings = (directory / "bluetooth_ble5_bindings.c").read_text(encoding="utf-8")
@@ -350,6 +352,8 @@ def check(
             (1, 1, 0, 1),
             (1, 1, 1, 1),
         ):
+            if mesh and not extended:
+                continue
             definitions = [
                 "MYNEWT_VAL(x) MYNEWT_VAL_ ## x",
                 "ESP_IDF_VERSION_VAL(a,b,c) (((a)<<16)|((b)<<8)|(c))",
@@ -368,11 +372,13 @@ def check(
                 "MYNEWT_VAL_BLE_PERIODIC_ADV_ENH " + str(enhancements),
                 "MYNEWT_VAL_BLE_ENABLE_CONN_REATTEMPT " + str(reattempt),
                 "MYNEWT_VAL_BLE_EXT_ADV_MAX_SIZE 1650",
-                "MYNEWT_VAL_BLE_MULTI_ADV_INSTANCES 2",
+                "MYNEWT_VAL_BLE_MULTI_ADV_INSTANCES 4",
                 "MYNEWT_VAL_BLE_LL_CFG_FEAT_LE_2M_PHY 1",
                 "MYNEWT_VAL_BLE_LL_CFG_FEAT_LE_CODED_PHY 1",
-                "BLE_ADV_INSTANCES 3",
+                "BLE_ADV_INSTANCES 5",
             ]
+            if mesh:
+                definitions += ["CONFIG_BLE_MESH 1"]
             if periodic:
                 backend_code = preprocess(header + backend, definitions)
                 sync_function = function(parser, backend_code, "esp32_ble5_periodic_sync")
@@ -461,6 +467,7 @@ if __name__ == "__main__":
     arguments.add_argument("--idf-version", required=True)
     arguments.add_argument("--npl-header", type=Path)
     arguments.add_argument("--port-header", type=Path)
+    arguments.add_argument("--mesh", action="store_true", help="Check BLE5 with Mesh coexistence hooks enabled")
     args = arguments.parse_args()
     count = sum(
         check(
@@ -471,6 +478,7 @@ if __name__ == "__main__":
             args.idf_version,
             args.npl_header,
             args.port_header,
+            args.mesh,
         )
         for headers in args.headers
     )

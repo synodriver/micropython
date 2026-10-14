@@ -368,10 +368,9 @@ def check(
                 "MYNEWT_VAL_BLE_PERIODIC_ADV_ENH " + str(enhancements),
                 "MYNEWT_VAL_BLE_ENABLE_CONN_REATTEMPT " + str(reattempt),
                 "MYNEWT_VAL_BLE_EXT_ADV_MAX_SIZE 1650",
-                "MYNEWT_VAL_BLE_MULTI_ADV_INSTANCES 2",
+                "MYNEWT_VAL_BLE_MULTI_ADV_INSTANCES 4",
                 "MYNEWT_VAL_BLE_LL_CFG_FEAT_LE_2M_PHY 1",
                 "MYNEWT_VAL_BLE_LL_CFG_FEAT_LE_CODED_PHY 1",
-                "BLE_ADV_INSTANCES 3",
             ]
             if periodic:
                 backend_code = preprocess(header + backend, definitions)

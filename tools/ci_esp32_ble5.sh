@@ -49,6 +49,10 @@ for option in CONFIG_SOC_BLE_50_SUPPORTED CONFIG_BT_NIMBLE_ENABLED CONFIG_BT_CON
         exit 1
     fi
 done
+if ! grep -Fxq "CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4" ports/esp32/build-ble5/sdkconfig; then
+    echo "Required BLE 5 advertising capacity missing: CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4" >&2
+    exit 1
+fi
 ble5_source=$(find ports/esp32/build-ble5 -name modbluetooth_esp32.c -print -quit)
 test -n "${ble5_source}"
 grep -Fq "MP_QSTR_gap_advertise_ext" "${ble5_source}"
@@ -72,6 +76,7 @@ printf "%s\n" \
     "ESP-IDF: v5.5.5" \
     "Source commit: $(git rev-parse HEAD)" \
     "BLE 5: 2M/Coded PHY, extended advertising/scanning/connections, periodic advertising/synchronisation." \
+    "Advertising instances: 5 total; legacy handle 0, extended handles 1-4 (subject to controller resources)." \
     "Flash the combined image: python -m esptool --chip ${target} write_flash ${flash_offset} firmware.bin" \
     "micropython.bin is the application only; it is not a combined image." \
     "See ports/esp32/README.ble5.md in the source for the BLE 5 API." \

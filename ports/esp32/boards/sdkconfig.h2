@@ -10,3 +10,8 @@ CONFIG_SPI_FLASH_ROM_IMPL=y
 # mDNS netifs for Wi-Fi STA, AP to save a small amount of resources
 CONFIG_MDNS_PREDEF_NETIF_STA=n
 CONFIG_MDNS_PREDEF_NETIF_AP=n
+
+# Allow more BLE advertising reports to queue while synchronous Python IRQs run.
+# A 1650-byte extended/periodic chain can exceed the SDK default of 8 buffers.
+# Start with 16 on H2; validate long-chain reception and native heap headroom.
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=16

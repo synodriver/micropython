@@ -51,8 +51,8 @@ if ! find ports/esp32/build-ble5-diagnostics -name "*bluetooth_ble5_diagnostics*
     echo "BLE 5 diagnostic source was not compiled" >&2
     exit 1
 fi
-if ! grep -Fxq 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-4MiBplus-ble5-diagnostics.csv"' ports/esp32/build-ble5-diagnostics/sdkconfig; then
-    echo "Diagnostic partition table was not selected" >&2
+if [ "${target}" = "esp32c6" ] && ! grep -Fxq 'CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-4MiBplus-ble5-diagnostics.csv"' ports/esp32/build-ble5-diagnostics/sdkconfig; then
+    echo "C6 diagnostic partition table was not selected" >&2
     exit 1
 fi
 
@@ -87,6 +87,10 @@ cp ports/esp32/build-ble5-diagnostics/sdkconfig ports/esp32/artifacts-diagnostic
 # Use the same starting offset and fallback as makeimg.py.
 flash_offset=$(sed -n 's/^CONFIG_BOOTLOADER_OFFSET_IN_FLASH=//p' ports/esp32/build-ble5-diagnostics/sdkconfig)
 flash_offset=${flash_offset:-0x1000}
+partition_note="Partition table: board default (diagnostic build does not alter it)."
+if [ "${target}" = "esp32c6" ]; then
+    partition_note="Partition table: partitions-4MiBplus-ble5-diagnostics.csv (factory app slot 2 MiB)."
+fi
 printf "%s\n" \
     "Board: ${board}" \
     "Board variant: ${variant:-default}" \
@@ -95,7 +99,7 @@ printf "%s\n" \
     "Source commit: $(git rev-parse HEAD)" \
     "BLE 5 diagnostics: enabled (mempool failures, status/timing counters, 32-entry trace)." \
     "BLE 5: 2M/Coded PHY, extended advertising/scanning/connections, periodic advertising/synchronisation." \
-    "Partition table: partitions-4MiBplus-ble5-diagnostics.csv (factory app slot 2 MiB)." \
+    "${partition_note}" \
     "Advertising instances: 5 total; legacy handle 0, extended handles 1-4 (subject to controller resources)." \
     "Flash the combined image: python -m esptool --chip ${target} write_flash ${flash_offset} firmware.bin" \
     "micropython.bin is the application only; it is not a combined image." \

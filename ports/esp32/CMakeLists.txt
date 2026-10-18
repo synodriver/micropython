@@ -77,11 +77,10 @@ elseif(IDF_TARGET STREQUAL "esp32c6")
         ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep_c6)
 endif()
 
-# Diagnostic probes add a small amount of code to the application.  Keep their
-# larger image out of the normal 4 MiB layout, whose 1984 KiB factory slot is
-# also used by the regular BLE 5 build.  This is intentionally opt-in so the
-# ordinary firmware layout and existing user files remain unchanged.
-if(MICROPY_ESP32_BLE5_DIAGNOSTICS)
+# The diagnostic image currently exceeds the 1984 KiB factory slot only on
+# ESP32-C6. Keep the larger slot scoped to that target so other diagnostic
+# targets retain their existing board partition layout.
+if(MICROPY_ESP32_BLE5_DIAGNOSTICS AND IDF_TARGET STREQUAL "esp32c6")
     list(APPEND SDKCONFIG_DEFAULTS
         ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble5_diagnostics)
 endif()

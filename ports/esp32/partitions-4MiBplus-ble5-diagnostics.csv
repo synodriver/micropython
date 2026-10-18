@@ -1,0 +1,7 @@
+# Diagnostic BLE 5 layout for devices with 4 MiB or more of flash.
+# The larger factory slot leaves the remainder available for the automatic
+# MicroPython user VFS partition.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,      0xf000,  0x1000,
+factory,  app,  factory,  0x10000, 0x200000,

@@ -6,6 +6,11 @@
 
 cmake_minimum_required(VERSION 3.16)
 
+# This option is consumed below while assembling SDKCONFIG_DEFAULTS, before
+# esp32_common.cmake is loaded by ESP-IDF.  ble5.cmake declares the same option
+# for the component build; CMake keeps the command-line value here.
+option(MICROPY_ESP32_BLE5_DIAGNOSTICS "Enable optional BLE 5 receive diagnostics" OFF)
+
 # Set the board if it's not already set.
 if(NOT MICROPY_BOARD)
     set(MICROPY_BOARD ESP32_GENERIC)
@@ -70,6 +75,15 @@ elseif(IDF_TARGET STREQUAL "esp32c6")
     list(APPEND SDKCONFIG_DEFAULTS
         ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep
         ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble_sleep_c6)
+endif()
+
+# Diagnostic probes add a small amount of code to the application.  Keep their
+# larger image out of the normal 4 MiB layout, whose 1984 KiB factory slot is
+# also used by the regular BLE 5 build.  This is intentionally opt-in so the
+# ordinary firmware layout and existing user files remain unchanged.
+if(MICROPY_ESP32_BLE5_DIAGNOSTICS)
+    list(APPEND SDKCONFIG_DEFAULTS
+        ${CMAKE_CURRENT_LIST_DIR}/boards/sdkconfig.ble5_diagnostics)
 endif()
 
 # Concatenate all sdkconfig files into a combined one for the IDF to use.

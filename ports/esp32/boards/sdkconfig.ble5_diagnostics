@@ -1,0 +1,4 @@
+# Diagnostic BLE 5 builds need a 2 MiB application slot.  This fragment is
+# appended only when MICROPY_ESP32_BLE5_DIAGNOSTICS=ON.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-4MiBplus-ble5-diagnostics.csv"

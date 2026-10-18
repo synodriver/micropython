@@ -311,6 +311,11 @@ static int esp32_ble5_scan_next(esp32_ble5_state_t *state) {
 }
 
 static int gap_scan_cb(struct ble_gap_event *event, void *arg) {
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_event(event);
+    esp32_ble5_diag_token_t diagnostic;
+    esp32_ble5_diag_begin(&diagnostic, event->type == BLE_GAP_EVENT_EXT_DISC ? ESP32_BLE5_DIAG_SCAN : 2);
+    #endif
     // Serialise state access and segment submission with Python start/stop.
     // The SDK releases its host lock before these scan callbacks.
     mp_state_thread_t *ts_orig = mp_thread_get_state();
@@ -320,6 +325,9 @@ static int gap_scan_cb(struct ble_gap_event *event, void *arg) {
         MP_THREAD_GIL_ENTER();
     }
     uint32_t generation = (uint32_t)(uintptr_t)arg;
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_acquired(&diagnostic);
+    #endif
     esp32_ble5_state_t *state = MP_STATE_PORT(bluetooth_ble5_state);
     if (mp_bluetooth_is_active() && state != NULL && state->scan_active && state->scan_generation == generation) {
         if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
@@ -343,6 +351,9 @@ static int gap_scan_cb(struct ble_gap_event *event, void *arg) {
             }
         }
     }
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_end(&diagnostic);
+    #endif
     if (ts_orig == NULL) {
         MP_THREAD_GIL_EXIT();
         mp_thread_set_state(ts_orig);
@@ -493,6 +504,10 @@ static void esp32_ble5_periodic_reset(void) {
 }
 
 static void esp32_ble5_periodic_deliver(const struct ble_gap_event *event, uint32_t generation) {
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_token_t diagnostic;
+    esp32_ble5_diag_begin(&diagnostic, event != NULL && event->type == BLE_GAP_EVENT_PERIODIC_REPORT ? ESP32_BLE5_DIAG_PERIODIC : 2);
+    #endif
     // Shutdown may invalidate this completion while the host task waits for
     // the GIL. Check and copy the result only after acquiring it.
     mp_state_thread_t *ts_orig = mp_thread_get_state();
@@ -502,6 +517,9 @@ static void esp32_ble5_periodic_deliver(const struct ble_gap_event *event, uint3
         MP_THREAD_GIL_ENTER();
     }
     struct ble_gap_event result;
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_acquired(&diagnostic);
+    #endif
     portENTER_CRITICAL(&esp32_ble5_sync_mux);
     bool current = esp32_ble5_sync_enabled && (event == NULL || generation == esp32_ble5_sync_generation);
     bool pending = current && esp32_ble5_sync_pending;
@@ -526,6 +544,9 @@ static void esp32_ble5_periodic_deliver(const struct ble_gap_event *event, uint3
             esp32_ble5_on_event(event);
         }
     }
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_end(&diagnostic);
+    #endif
     if (ts_orig == NULL) {
         MP_THREAD_GIL_EXIT();
         mp_thread_set_state(ts_orig);
@@ -566,6 +587,9 @@ void esp32_ble5_periodic_deinit(void) {
 }
 
 static int esp32_ble5_gap_cb(struct ble_gap_event *event, void *arg) {
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    esp32_ble5_diag_event(event);
+    #endif
     if (event->type != BLE_GAP_EVENT_PERIODIC_SYNC && event->type != BLE_GAP_EVENT_PERIODIC_REPORT
         && event->type != BLE_GAP_EVENT_PERIODIC_SYNC_LOST) {
         return peripheral_gap_event_cb(event, NULL);

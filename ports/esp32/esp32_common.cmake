@@ -307,6 +307,16 @@ endif()
 target_link_libraries(${MICROPY_TARGET} usermod)
 
 # Extra linker options
+if(ESP32_BLE5_DIAGNOSTICS_ENABLED)
+    # Observe public allocator calls, including calls from the H2 controller.
+    target_link_options(${MICROPY_TARGET} PUBLIC
+        -Wl,--undefined=__wrap_os_mempool_init
+        -Wl,--undefined=__wrap_os_memblock_get
+        -Wl,--wrap=os_mempool_init
+        -Wl,--wrap=os_memblock_get
+    )
+endif()
+
 # (when wrap symbols are in standalone files, --undefined ensures
 # the linker doesn't skip that file.)
 target_link_options(${MICROPY_TARGET} PUBLIC

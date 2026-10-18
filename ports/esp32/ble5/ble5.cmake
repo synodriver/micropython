@@ -1,11 +1,13 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(ESP32_BLE5_DIR ${MICROPY_PORT_DIR}/ble5)
 set(ESP32_BLE5_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ble5)
+option(MICROPY_ESP32_BLE5_DIAGNOSTICS "Enable optional BLE 5 receive diagnostics" OFF)
 set(ESP32_BLE5_INPUTS
     ${MICROPY_DIR}/extmod/modbluetooth.c
     ${MICROPY_DIR}/extmod/nimble/modbluetooth_nimble.c
     ${ESP32_BLE5_DIR}/make_bindings.py
     ${ESP32_BLE5_DIR}/bluetooth_ble5.h
+    ${ESP32_BLE5_DIR}/bluetooth_ble5_diagnostics.h
     ${ESP32_BLE5_DIR}/bluetooth_ble5_bindings.c
     ${ESP32_BLE5_DIR}/bluetooth_ble5_nimble.c
     ${ESP32_BLE5_DIR}/bluetooth_ble5_events.c
@@ -28,3 +30,9 @@ list(APPEND MICROPY_SOURCE_EXTMOD
     ${ESP32_BLE5_OUTPUT}/modbluetooth_nimble_esp32.c
 )
 list(APPEND MICROPY_INC_CORE ${ESP32_BLE5_DIR})
+set(ESP32_BLE5_DIAGNOSTICS_ENABLED FALSE)
+if(MICROPY_ESP32_BLE5_DIAGNOSTICS)
+    set(ESP32_BLE5_DIAGNOSTICS_ENABLED TRUE)
+    list(APPEND MICROPY_SOURCE_EXTMOD ${ESP32_BLE5_DIR}/bluetooth_ble5_diagnostics.c)
+    list(APPEND MICROPY_DEF_CORE MICROPY_ESP32_BLE5_DIAGNOSTICS=1)
+endif()

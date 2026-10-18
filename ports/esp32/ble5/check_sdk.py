@@ -7,6 +7,7 @@ MSVC uses /Zs; GCC/Clang use -fsyntax-only. No objects are produced or executed.
 
 import argparse
 import io
+import itertools
 import re
 import subprocess
 import tempfile
@@ -127,6 +128,9 @@ typedef struct {int qstr;int flags;union {mp_int_t u_int;mp_obj_t u_obj;void *u_
 typedef union {mp_int_t u_int;mp_obj_t u_obj;bool u_bool;} mp_arg_val_t;
 typedef struct {int unused;} mp_map_t;
 typedef struct {void *buf;size_t len;} mp_buffer_info_t;
+typedef int qstr;
+typedef struct {mp_obj_t items[1];} mp_obj_tuple_t;
+#define MP_OBJ_TO_PTR(x) (x)
 #define MP_BUFFER_READ 1
 mp_obj_t mp_const_none;
 mp_obj_t mp_const_true;
@@ -138,6 +142,9 @@ mp_obj_t bluetooth_handle_errno(int);
 mp_obj_t mp_obj_new_dict(size_t);
 void mp_obj_dict_store(mp_obj_t,mp_obj_t,mp_obj_t);
 mp_obj_t mp_obj_new_bool(bool);
+bool mp_obj_is_true(mp_obj_t);
+mp_obj_t mp_obj_new_int_from_uint(unsigned int);
+mp_obj_t mp_obj_new_int_from_ull(unsigned long long);
 mp_obj_t mp_obj_new_tuple(size_t,const mp_obj_t *);
 void mp_get_buffer_raise(mp_obj_t,mp_buffer_info_t *,int);
 void mp_arg_parse_all(size_t,const mp_obj_t *,mp_map_t *,size_t,const mp_arg_t *,mp_arg_val_t *);
@@ -292,6 +299,7 @@ def check(
     power = power_declarations(parser, bt_header)
     directory = Path(__file__).resolve().parent
     header = (directory / "bluetooth_ble5.h").read_text(encoding="utf-8")
+    header = (directory / "bluetooth_ble5_diagnostics.h").read_text(encoding="utf-8") + header
     backend = (directory / "bluetooth_ble5_nimble.c").read_text(encoding="utf-8")
     port = (directory.parent / "mpnimbleport.c").read_text(encoding="utf-8")
     bindings = (directory / "bluetooth_ble5_bindings.c").read_text(encoding="utf-8")
@@ -342,13 +350,16 @@ def check(
         make_bindings.generate(directory.parents[2], output)
         generated = (output / "modbluetooth_nimble_esp32.c").read_text(encoding="utf-8")
         shutdown = function(parser, generated, "mp_bluetooth_deinit")
-        for extended, periodic, enhancements, reattempt in (
+        configurations = (
             (0, 0, 0, 0),
             (1, 0, 0, 0),
             (1, 1, 0, 0),
             (1, 1, 1, 0),
             (1, 1, 0, 1),
             (1, 1, 1, 1),
+        )
+        for (extended, periodic, enhancements, reattempt), diagnostics in itertools.product(
+            configurations, (0, 1)
         ):
             definitions = [
                 "MYNEWT_VAL(x) MYNEWT_VAL_ ## x",
@@ -356,6 +367,7 @@ def check(
                 "ESP_IDF_VERSION " + str(idf_version_value),
                 "MICROPY_PY_BLUETOOTH 1",
                 "MICROPY_BLUETOOTH_NIMBLE 1",
+                "MICROPY_ESP32_BLE5_DIAGNOSTICS " + str(diagnostics),
                 "MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY 1",
                 "MICROPY_PY_BLUETOOTH_ENABLE_CENTRAL_MODE 1",
                 "MICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS_WITH_INTERLOCK 1",
@@ -434,7 +446,8 @@ def check(
                         + str([(node.start_point, node.text[:80]) for node in errors[:5]])
                     )
                 path = (
-                    Path(temporary) / f"{kind}-{extended}-{periodic}-{enhancements}-{reattempt}.c"
+                    Path(temporary)
+                    / f"{kind}-{extended}-{periodic}-{enhancements}-{reattempt}-{diagnostics}.c"
                 )
                 path.write_text(code, encoding="utf-8")
                 result = subprocess.run(

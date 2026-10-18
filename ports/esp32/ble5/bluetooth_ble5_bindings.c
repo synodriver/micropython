@@ -23,6 +23,7 @@ static mp_obj_t bluetooth_ble5_features(mp_obj_t self_in) {
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_periodic_advertising), mp_obj_new_bool(MICROPY_ESP32_BLE5_PERIODIC_ADV));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power_set), mp_const_true);
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_tx_power_get), mp_const_true);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_diagnostics), mp_obj_new_bool(MICROPY_ESP32_BLE5_DIAGNOSTICS));
     #if MICROPY_ESP32_BLE5_EXT_ADV
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_advertising_instances), MP_OBJ_NEW_SMALL_INT(BLE_ADV_INSTANCES));
     mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_max_adv_data_len), MP_OBJ_NEW_SMALL_INT(MYNEWT_VAL(BLE_EXT_ADV_MAX_SIZE)));
@@ -30,6 +31,77 @@ static mp_obj_t bluetooth_ble5_features(mp_obj_t self_in) {
     return result;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(bluetooth_ble5_features_obj, bluetooth_ble5_features);
+
+#if MICROPY_ESP32_BLE5_DIAGNOSTICS
+static mp_obj_t bluetooth_ble5_diagnostic_rx(const esp32_ble5_diag_rx_t *rx) {
+    mp_obj_t result = mp_obj_new_dict(0);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_reports), mp_obj_new_int_from_uint(rx->reports));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_bytes), mp_obj_new_int_from_uint(rx->bytes));
+    mp_obj_t status[4];
+    for (size_t i = 0; i < MP_ARRAY_SIZE(status); ++i) {
+        status[i] = mp_obj_new_int_from_uint(rx->status[i]);
+    }
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_status), mp_obj_new_tuple(MP_ARRAY_SIZE(status), status));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_timed), mp_obj_new_int_from_uint(rx->timed));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_gil_wait_us), mp_obj_new_int_from_ull(rx->gil_wait_us));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_gil_wait_max_us), mp_obj_new_int_from_uint(rx->gil_wait_max_us));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_callback_us), mp_obj_new_int_from_ull(rx->callback_us));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_callback_max_us), mp_obj_new_int_from_uint(rx->callback_max_us));
+    return result;
+}
+
+static mp_obj_t bluetooth_ble5_diagnostics(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_enable, ARG_clear };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_enable, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_clear, MP_ARG_BOOL | MP_ARG_KW_ONLY, {.u_bool = false} },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+    int enable = args[ARG_enable].u_obj == mp_const_none ? -1 : mp_obj_is_true(args[ARG_enable].u_obj);
+    esp32_ble5_diag_snapshot_t snapshot;
+    esp32_ble5_diag_snapshot(enable, args[ARG_clear].u_bool, &snapshot);
+    // All Python allocation happens after releasing the diagnostic spinlock.
+    mp_obj_t result = mp_obj_new_dict(0);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_enabled), mp_obj_new_bool(snapshot.enabled));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_epoch), mp_obj_new_int_from_uint(snapshot.epoch));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_now_us), mp_obj_new_int_from_uint(snapshot.now_us));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_scan), bluetooth_ble5_diagnostic_rx(&snapshot.rx[ESP32_BLE5_DIAG_SCAN]));
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_periodic), bluetooth_ble5_diagnostic_rx(&snapshot.rx[ESP32_BLE5_DIAG_PERIODIC]));
+    static const qstr pool_names[ESP32_BLE5_DIAG_POOLS] = {
+        MP_QSTR_controller_low, MP_QSTR_controller_high, MP_QSTR_transport_low,
+        MP_QSTR_transport_high, MP_QSTR_host_event,
+    };
+    mp_obj_t pools = mp_obj_new_dict(0);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_pools), pools);
+    for (size_t i = 0; i < ESP32_BLE5_DIAG_POOLS; ++i) {
+        const esp32_ble5_diag_pool_t *pool = &snapshot.pools[i];
+        mp_obj_t values = mp_obj_new_dict(0);
+        mp_obj_dict_store(pools, MP_OBJ_NEW_QSTR(pool_names[i]), values);
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_detected), mp_obj_new_bool(pool->detected));
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_blocks), mp_obj_new_int_from_uint(pool->blocks));
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_last_free), mp_obj_new_int_from_uint(pool->last_free));
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_sdk_min_free), mp_obj_new_int_from_uint(pool->sdk_min_free));
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_initializations), mp_obj_new_int_from_uint(pool->initializations));
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_allocations), mp_obj_new_int_from_uint(pool->allocations));
+        mp_obj_dict_store(values, MP_OBJ_NEW_QSTR(MP_QSTR_failures), mp_obj_new_int_from_uint(pool->failures));
+    }
+    uint32_t count = MIN(snapshot.trace_written, ESP32_BLE5_DIAG_TRACE);
+    mp_obj_t trace = mp_obj_new_tuple(count, NULL);
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_trace), trace);
+    for (uint32_t i = 0; i < count; ++i) {
+        const esp32_ble5_diag_trace_t *entry = &snapshot.trace[(snapshot.trace_written - count + i) % ESP32_BLE5_DIAG_TRACE];
+        mp_obj_t values[] = {
+            mp_obj_new_int_from_uint(entry->time_us), MP_OBJ_NEW_SMALL_INT(entry->event),
+            MP_OBJ_NEW_SMALL_INT(entry->arg), MP_OBJ_NEW_SMALL_INT(entry->handle), mp_obj_new_int_from_uint(entry->value),
+        };
+        ((mp_obj_tuple_t *)MP_OBJ_TO_PTR(trace))->items[i] = mp_obj_new_tuple(MP_ARRAY_SIZE(values), values);
+    }
+    mp_obj_dict_store(result, MP_OBJ_NEW_QSTR(MP_QSTR_trace_written), mp_obj_new_int_from_uint(snapshot.trace_written));
+    return result;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(bluetooth_ble5_diagnostics_obj, 1, bluetooth_ble5_diagnostics);
+#endif
 
 static mp_obj_t bluetooth_ble5_phy(mp_obj_t self_in, mp_obj_t handle_in) {
     uint8_t tx_phy, rx_phy;
@@ -274,6 +346,9 @@ static MP_DEFINE_CONST_FUN_OBJ_2(bluetooth_ble5_periodic_sync_stop_obj, bluetoot
 // BEGIN METHODS
     #if MICROPY_ESP32_BLE5
     { MP_ROM_QSTR(MP_QSTR_ble5_features), MP_ROM_PTR(&bluetooth_ble5_features_obj) },
+    #if MICROPY_ESP32_BLE5_DIAGNOSTICS
+    { MP_ROM_QSTR(MP_QSTR_ble5_diagnostics), MP_ROM_PTR(&bluetooth_ble5_diagnostics_obj) },
+    #endif
     { MP_ROM_QSTR(MP_QSTR_gap_phy), MP_ROM_PTR(&bluetooth_ble5_phy_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_set_phy), MP_ROM_PTR(&bluetooth_ble5_set_phy_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_set_tx_power), MP_ROM_PTR(&bluetooth_ble5_set_tx_power_obj) },

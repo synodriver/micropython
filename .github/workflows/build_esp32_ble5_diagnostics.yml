@@ -1,0 +1,63 @@
+name: Build ESP32 BLE 5 diagnostic firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: BLE 5 diagnostic firmware - ${{ matrix.target }} (${{ matrix.variant || 'default' }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: esp32s3
+            board: ESP32_GENERIC_S3
+            variant: ""
+          - target: esp32s3
+            board: ESP32_GENERIC_S3
+            variant: SPIRAM_OCT
+          - target: esp32c2
+            board: ESP32_GENERIC_C2
+            variant: ""
+          - target: esp32c3
+            board: ESP32_GENERIC_C3
+            variant: ""
+          - target: esp32c5
+            board: ESP32_GENERIC_C5
+            variant: ""
+          - target: esp32c6
+            board: ESP32_GENERIC_C6
+            variant: ""
+          - target: esp32h2
+            board: ESP32_GENERIC_H2
+            variant: ""
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build and package BLE 5 diagnostic firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: ${{ matrix.target }}
+          # The action embeds this command in single quotes; keep shell logic
+          # in a script so its quotes and expansions run inside the container.
+          command: bash tools/ci_esp32_ble5_diagnostics.sh "${{ matrix.board }}" "${{ matrix.variant }}" "${{ matrix.target }}"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: micropython-ble5-diagnostics-${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
+          path: ports/esp32/artifacts-diagnostics/
+          if-no-files-found: error
+          retention-days: 14

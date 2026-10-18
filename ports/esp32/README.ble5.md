@@ -61,7 +61,7 @@ S3/C3 的 10 个活动槽由连接、扫描、广播和周期同步共享，九�
 `boards/sdkconfig.h2` 将 `CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT` 默认设为
 **32**，用于 H2 的低优先级 HCI 广播事件缓冲；IDF 5.5.5 的默认值为 8。
 `ESP32_GENERIC_H2` 和 `M5STACK_NANOH2` 均通过公共 H2 配置加载此项。
-其他芯片的事件缓冲数量沿用既有配置；MSYS/ACL 池及 Python API 不受本项调整影响。
+S3 的缓冲配置见下节；MSYS/ACL 池及 Python API 不受本项调整影响。
 
 双板测试发现，S3 发出的 1650 字节扩展/周期广播在 H2 上可产生 12～13 个
 HCI 报告，同步 Python IRQ 消费不及时会导致长链截断。增加缓冲是为这类突发
@@ -73,6 +73,20 @@ HCI 报告，同步 Python IRQ 消费不及时会导致长链截断。增加缓�
 
 已有构建目录须显式将 `sdkconfig` 中此项改为 32，或使用新构建目录；仅更新默认
 配置文件不会覆盖已有值。BLE5 CI 会检查 H2 最终生成的 `sdkconfig` 确实为 32。
+
+### S3 扫描接收事件缓冲
+
+`boards/sdkconfig.s3` 将 `CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT` 从 SDK
+默认的 **8** 提高到 **32**，通过 S3 公共板型配置加载，包含 `ESP32_GENERIC_S3`
+及其 `SPIRAM_OCT` 变体。普通与诊断固件均使用此默认值；其他芯片及高优先级池不变。
+
+S3 实测曾出现 transport 低池分配失败，此调整用于增加扫描报告的突发缓冲余量，
+会增加原生 RAM 占用。S3 的周期报告使用非 discardable 分配路径，控制器内部
+接收缓冲也不由此项直接配置。已有测试在已监测池无分配失败时仍收到周期截断
+`status=2`，因此本次扩池不能视为周期长链截断的根因修复，须重新刷机对照验证。
+
+已有构建目录须显式更新 `sdkconfig` 中此项，或使用新构建目录；仅更新默认文件
+不会覆盖已有值。普通及诊断 BLE5 CI 脚本均检查 S3 最终生成的值为 32。
 
 ### BLE5 绑定生成
 

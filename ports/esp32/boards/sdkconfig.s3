@@ -1,0 +1,5 @@
+# Allow more scan reports to queue while synchronous Python IRQs run.
+# On S3 this enlarges the host transport discardable event pool, not the
+# controller's internal RX buffers. Periodic reports use non-discardable events.
+# This adds native RAM overhead and does not guarantee long-chain reception.
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=32

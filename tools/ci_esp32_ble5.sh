@@ -53,8 +53,8 @@ if ! grep -Fxq "CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4" ports/esp32/build-ble5
     echo "Required BLE 5 advertising capacity missing: CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=4" >&2
     exit 1
 fi
-if [ "${target}" = "esp32h2" ] && ! grep -Fxq "CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=32" ports/esp32/build-ble5/sdkconfig; then
-    echo "Required H2 advertising event buffer count missing: CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=32" >&2
+if { [ "${target}" = "esp32h2" ] || [ "${target}" = "esp32s3" ]; } && ! grep -Fxq "CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=32" ports/esp32/build-ble5/sdkconfig; then
+    echo "Required ${target} advertising event buffer count missing: CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=32" >&2
     exit 1
 fi
 ble5_source=$(find ports/esp32/build-ble5 -name modbluetooth_esp32.c -print -quit)

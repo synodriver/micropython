@@ -29,27 +29,29 @@ aioble 按固件查询到的实例总数校验范围，旧固件也仍按其原�
 ### BLE 连接容量
 
 原生蓝牙目标的 `mpconfigboard_*_common.cmake` 在 `sdkconfig.ble` 后选择
-`sdkconfig.ble_max_*`，将连接数默认值设置到已核对的 IDF 5.5～6.1 SDK 上限：
+`sdkconfig.ble_max_*`，设置以下连接数默认值。C5/C6/H2 使用 16 个连接槽，
+以减少原生 RAM 占用；其他原生目标保持已核对的 IDF 5.5～6.1 SDK 上限：
 
 | 目标 | `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` | 控制器配置 |
 | --- | --- | --- |
 | 经典 ESP32 | 9 | `CONFIG_BTDM_CTRL_BLE_MAX_CONN=9` |
 | ESP32-C2 | 2 | 控制器随 NimBLE 连接数配置 |
 | ESP32-C3 / S3 | 9 | `CONFIG_BT_CTRL_BLE_MAX_ACT=10` |
-| ESP32-C5 / C6 | 70 | 控制器随 NimBLE 连接数配置 |
-| ESP32-H2，IDF 5.5～5.5.2 | 35 | 按 SDK 版本选用 `sdkconfig.ble_max_h2_legacy` |
-| ESP32-H2，IDF 5.5.3 及之后的已核对版本 | 70 | 与 C5/C6 共用 `sdkconfig.ble_max_c6` |
+| ESP32-C5 / C6 | 16 | 控制器随 NimBLE 连接数配置 |
+| ESP32-H2，IDF 5.5～5.5.2 | 16 | 按 SDK 版本选用 `sdkconfig.ble_max_h2_legacy` |
+| ESP32-H2，IDF 5.5.3 及之后的已核对版本 | 16 | 与 C5/C6 共用 `sdkconfig.ble_max_c6` |
 
 这是 Central/Peripheral 共用的 BLE 连接总数上限，不是同时发起连接的数量。
 aioble 主动建连仍需逐个完成；增加连接槽不改变其停扫和 pending connect 限制。
 S3/C3 的 10 个活动槽由连接、扫描、广播和周期同步共享，九条连接占用后不能再
 保证扫描和广播同时运行；需要为这些活动留出容量。
 
-增加连接数会增加蓝牙内存开销，尤其是 35/70 连接的配置；SDK 上限不保证所有
-连接都能在当前内存、连接间隔、Wi-Fi 负载下稳定工作，也不保证旧脚本剩余堆大小相同。
+增加连接数会增加蓝牙内存开销；C5/C6/H2 从原来的 35/70 降为 16，以减少连接池、
+L2CAP 等资源的容量。16 个连接槽仍不保证所有连接都能在当前内存、连接间隔、
+Wi-Fi 负载下稳定工作，也不保证旧脚本剩余堆大小相同。
 `CONFIG_BT_NIMBLE_GATT_MAX_PROCS` 保留 SDK 默认值 4，MSYS/ACL 缓冲池也保留原配置。
 连接槽和 GATT 请求池不同；多连接业务应限制同时提交的 GATT 请求，按负载另行调整
-缓冲池，不能将 70 条连接理解为 70 个 GATT 请求都能同时在途。
+缓冲池，不能将 16 条连接理解为 16 个 GATT 请求都能同时在途。
 
 配置片段作为板型默认值载入，后续板型/variant 的 sdkconfig 仍可降低连接数。
 已有构建目录的 `sdkconfig` 优先，应使用新构建目录，或显式更新该表涉及的选项；

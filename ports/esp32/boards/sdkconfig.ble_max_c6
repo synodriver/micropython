@@ -1,3 +1,3 @@
-# ESP32-C5 / C6, and H2 on IDF >= 5.5.3: SDK connection capacity.
-# This increases Bluetooth RAM usage; it does not guarantee 70 busy links.
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=70
+# ESP32-C5 / C6, and H2 on IDF >= 5.5.3: default connection capacity.
+# Reserve native RAM for Python and other BLE resources instead of 70 slots.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=16

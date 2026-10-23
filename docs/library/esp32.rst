@@ -355,6 +355,45 @@ external EXT1 wakeup; GPIO7 is not led out for this purpose.
 
     Read the raw value of the internal temperature sensor, returning an integer.
 
+.. function:: gc_heap_reserve([nbytes])
+
+    Get or set the internal RAM headroom for automatic MicroPython heap growth.
+    This function is available on all ESP32 targets. With no argument, return
+    the current budget in bytes. With an argument, set the budget and return
+    ``None``. Zero disables the limit and restores the normal ESP-IDF allocation
+    policy. A negative value raises ``ValueError``; an integer too large for a
+    signed machine word raises ``OverflowError``. Invalid arguments leave the
+    budget unchanged.
+
+    When the budget is nonzero, new heap regions preferentially use PSRAM
+    available to ESP-IDF's normal allocator. Internal RAM is used only up to
+    the smaller of its largest free block and its free total minus the budget.
+    A failed PSRAM allocation cannot fall back to internal RAM without this
+    check. PSRAM space does not count towards the internal RAM budget.
+
+    The setting affects future heap growth only. It does not shrink existing
+    Python heap regions or allocate an exclusive pool for Bluetooth. A budget
+    larger than the current free internal RAM is allowed and prevents further
+    growth into internal RAM. Python can continue using its existing heap and
+    available PSRAM, but may raise ``MemoryError`` sooner.
+
+    This is a best-effort policy: allocator overhead, fragmentation and
+    concurrent ESP-IDF allocations can still cause native allocation failures.
+    The budget covers internal memory available to the normal allocator
+    (``MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL``), not memory reserved by
+    ESP-IDF for specialised allocations such as DMA.
+
+    The default is zero on all ESP32 targets, so no headroom is reserved unless
+    configured. Boards can override ``MICROPY_GC_SPLIT_HEAP_AUTO_RESERVE`` at build
+    time. Both soft and hardware resets restore that default; the initial
+    Python heap allocation is unchanged. Nothing is written to NVS.
+
+    Set the budget early in ``boot.py``, before importing large modules::
+
+        import esp32
+        esp32.gc_heap_reserve(48 * 1024)
+        print(esp32.gc_heap_reserve())  # 49152
+
 .. function:: idf_heap_info(capabilities)
 
     Returns information about the ESP-IDF heap memory regions. One of them contains
@@ -387,6 +426,7 @@ external EXT1 wakeup; GPIO7 is not led out for this purpose.
        The "max new split" value in :func:`micropython.mem_info()` output
        corresponds to the largest free block of ESP-IDF heap that could be
        automatically added on demand to the MicroPython heap.
+       It takes the current :func:`gc_heap_reserve` budget into account.
 
        The result of :func:`gc.mem_free()` is the total of the current "free"
        and "max new split" values printed by :func:`micropython.mem_info()`.

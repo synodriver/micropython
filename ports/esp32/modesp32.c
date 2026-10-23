@@ -47,6 +47,7 @@
 #include "modmachine.h"
 #include "machine_rtc.h"
 #include "modesp32.h"
+#include "gccollect.h"
 
 // These private includes are needed for idf_heap_info.
 #define MULTI_HEAP_FREERTOS
@@ -376,6 +377,21 @@ static MP_DEFINE_CONST_FUN_OBJ_0(esp32_mcu_temperature_obj, esp32_mcu_temperatur
 
 #endif
 
+#if MICROPY_GC_SPLIT_HEAP_AUTO
+static mp_obj_t esp32_gc_heap_reserve(size_t n_args, const mp_obj_t *args) {
+    if (n_args == 0) {
+        return mp_obj_new_int_from_uint(esp32_gc_get_reserve());
+    }
+    mp_int_t reserve = mp_obj_get_int(args[0]);
+    if (reserve < 0) {
+        mp_raise_ValueError(MP_ERROR_TEXT("reserve must be >= 0"));
+    }
+    esp32_gc_set_reserve(reserve);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(esp32_gc_heap_reserve_obj, 0, 1, esp32_gc_heap_reserve);
+#endif
+
 static mp_obj_t esp32_idf_heap_info(const mp_obj_t cap_in) {
     mp_int_t cap = mp_obj_get_int(cap_in);
     multi_heap_info_t info;
@@ -478,6 +494,9 @@ static const mp_rom_map_elem_t esp32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_mcu_temperature), MP_ROM_PTR(&esp32_mcu_temperature_obj) },
     #endif
     { MP_ROM_QSTR(MP_QSTR_idf_heap_info), MP_ROM_PTR(&esp32_idf_heap_info_obj) },
+    #if MICROPY_GC_SPLIT_HEAP_AUTO
+    { MP_ROM_QSTR(MP_QSTR_gc_heap_reserve), MP_ROM_PTR(&esp32_gc_heap_reserve_obj) },
+    #endif
     #if CONFIG_FREERTOS_USE_TRACE_FACILITY
     { MP_ROM_QSTR(MP_QSTR_idf_task_info), MP_ROM_PTR(&esp32_idf_task_info_obj) },
     #endif

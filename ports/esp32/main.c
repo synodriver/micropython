@@ -62,6 +62,7 @@
 #include "usb.h"
 #include "usb_serial_jtag.h"
 #include "modesp32.h"
+#include "gccollect.h"
 #include "modmachine.h"
 #include "modnetwork.h"
 #if MICROPY_PY_NETWORK_WLAN_CSI
@@ -137,6 +138,9 @@ void mp_task(void *pvParameter) {
     }
 
 soft_reset:
+    #if MICROPY_GC_SPLIT_HEAP_AUTO
+    esp32_gc_reset();
+    #endif
     // initialise the stack pointer for the main thread
     mp_cstack_init_with_top((void *)sp, MICROPY_TASK_STACK_SIZE);
     gc_init(mp_task_heap, mp_task_heap + MICROPY_GC_INITIAL_HEAP_SIZE);

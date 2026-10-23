@@ -28,6 +28,8 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
+#include "esp_heap_caps.h"
 
 #include "py/mpconfig.h"
 #include "py/mpstate.h"
@@ -79,10 +81,65 @@ void gc_collect(void) {
 
 #if MICROPY_GC_SPLIT_HEAP_AUTO
 
-// The largest new region that is available to become Python heap is the largest
-// free block in the ESP-IDF system heap.
+// Default internal heap headroom. Boards can override this; Python can change
+// it at runtime using esp32.gc_heap_reserve(). This is not a dedicated BLE pool.
+#ifndef MICROPY_GC_SPLIT_HEAP_AUTO_RESERVE
+#define MICROPY_GC_SPLIT_HEAP_AUTO_RESERVE (0)
+#endif
+
+// The initial heap is allocated before esp32_gc_reset(), without a reserve.
+static size_t gc_heap_reserve;
+
+void esp32_gc_reset(void) {
+    gc_heap_reserve = MICROPY_GC_SPLIT_HEAP_AUTO_RESERVE;
+}
+
+size_t esp32_gc_get_reserve(void) {
+    return gc_heap_reserve;
+}
+
+void esp32_gc_set_reserve(size_t reserve) {
+    gc_heap_reserve = reserve;
+}
+
+static size_t gc_get_max_new_internal(void) {
+    uint32_t caps = MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL;
+    size_t free_bytes = heap_caps_get_free_size(caps);
+    if (free_bytes <= gc_heap_reserve) {
+        return 0;
+    }
+    // This is a best-effort limit: allocator overhead and concurrent native
+    // allocations can reduce the remaining free space below the reserve.
+    size_t largest = heap_caps_get_largest_free_block(caps);
+    return MIN(largest, free_bytes - gc_heap_reserve);
+}
+
 size_t gc_get_max_new_split(void) {
-    return heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    if (gc_heap_reserve == 0) {
+        return heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    }
+    size_t external = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM);
+    size_t internal = gc_get_max_new_internal();
+    return MAX(external, internal);
+}
+
+void *esp32_gc_alloc(size_t size) {
+    if (gc_heap_reserve == 0) {
+        return malloc(size);
+    }
+    // Explicit capabilities prevent malloc's automatic fallback from PSRAM to
+    // internal RAM from consuming the reserve. Recheck before allocating.
+    uint32_t external_caps = MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM;
+    if (size <= heap_caps_get_largest_free_block(external_caps)) {
+        void *ptr = heap_caps_malloc(size, external_caps);
+        if (ptr != NULL) {
+            return ptr;
+        }
+    }
+    if (size <= gc_get_max_new_internal()) {
+        return heap_caps_malloc(size, MALLOC_CAP_DEFAULT | MALLOC_CAP_INTERNAL);
+    }
+    return NULL;
 }
 
 #endif

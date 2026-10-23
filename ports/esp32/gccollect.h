@@ -40,3 +40,9 @@ extern uint32_t _heap_start;
 extern uint32_t _heap_end;
 
 void gc_collect(void);
+
+#if MICROPY_GC_SPLIT_HEAP_AUTO
+void esp32_gc_reset(void);
+size_t esp32_gc_get_reserve(void);
+void esp32_gc_set_reserve(size_t reserve);
+#endif

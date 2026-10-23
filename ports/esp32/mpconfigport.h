@@ -89,6 +89,9 @@
 #define MICROPY_GC_SPLIT_HEAP               (1)
 #define MICROPY_GC_SPLIT_HEAP_AUTO          (1)
 
+void *esp32_gc_alloc(size_t size);
+#define MP_PLAT_ALLOC_HEAP(size)            esp32_gc_alloc(size)
+
 // extended modules
 #ifndef MICROPY_PY_ESPNOW
 #define MICROPY_PY_ESPNOW                   (1)

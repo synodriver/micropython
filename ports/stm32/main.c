@@ -41,6 +41,9 @@
 #include "lib/littlefs/lfs2_util.h"
 #include "extmod/modmachine.h"
 #include "extmod/modnetwork.h"
+#if MICROPY_PY_NETWORK_HALOW
+#include "extmod/network_halow.h"
+#endif
 #include "extmod/machine_can.h"
 #include "extmod/vfs.h"
 #include "extmod/vfs_fat.h"
@@ -440,6 +443,20 @@ void stm32_main(uint32_t reset_mode) {
 
     #if defined(STM32N6)
     risaf_init();
+
+    // Enable AXISRAM3-6 and the NPU cache RAM.  AXISRAM3-6 control registers need
+    // to be read back after powering up (RM0486 section 10.4).
+    LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_RAMCFG);
+    CLEAR_BIT(RAMCFG_SRAM3_AXI_S->CR, RAMCFG_AXISRAM_POWERDOWN);
+    (void)RAMCFG_SRAM3_AXI_S->CR;
+    CLEAR_BIT(RAMCFG_SRAM4_AXI_S->CR, RAMCFG_AXISRAM_POWERDOWN);
+    (void)RAMCFG_SRAM4_AXI_S->CR;
+    CLEAR_BIT(RAMCFG_SRAM5_AXI_S->CR, RAMCFG_AXISRAM_POWERDOWN);
+    (void)RAMCFG_SRAM5_AXI_S->CR;
+    CLEAR_BIT(RAMCFG_SRAM6_AXI_S->CR, RAMCFG_AXISRAM_POWERDOWN);
+    (void)RAMCFG_SRAM6_AXI_S->CR;
+    LL_MEM_EnableClock(LL_MEM_AXISRAM3 | LL_MEM_AXISRAM4 | LL_MEM_AXISRAM5 | LL_MEM_AXISRAM6
+        | LL_MEM_CACHEAXIRAM);
     #endif
 
     #if defined(STM32F4) || defined(STM32F7)
@@ -757,6 +774,9 @@ soft_reset_exit:
     #endif
     #if MICROPY_PY_NETWORK
     mod_network_deinit();
+    #endif
+    #if MICROPY_PY_NETWORK_HALOW
+    network_halow_deinit_all();
     #endif
     soft_timer_deinit();
     timer_deinit();

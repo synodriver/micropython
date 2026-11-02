@@ -115,8 +115,7 @@ static void mp_machine_check_freq(mp_int_t freq) {
         mp_raise_ValueError(MP_ERROR_TEXT("unsupported P4 frequency"));
     }
     #else
-    if (freq != 20 && freq != 40 && freq != 80
-        && freq != 160
+    if (freq != 20 && freq != 40 && freq != 80 && freq != 160
         #if !(CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C6)
         && freq != 240
         #endif

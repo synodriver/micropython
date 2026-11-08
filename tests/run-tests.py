@@ -250,6 +250,7 @@ tests_requiring_float = (
     "extmod/asyncio_wait_for_fwd.py",
     "extmod/asyncio_wait_for_linked_task.py",
     "extmod/asyncio_wait_task.py",
+    "extmod/asyncio_wait_for_timeout_race.py",
     "extmod/json_dumps_float.py",
     "extmod/json_loads_float.py",
     "extmod/random_extra_float.py",
@@ -448,13 +449,26 @@ def run_micropython(pyb, args, test, is_special=False, is_feature_check=False):
                     if sys.platform in ["win32", "msys", "cygwin"]:
                         return b"SKIP\n"
 
+                    # Timeout for waiting on PTY output.  When this expires
+                    # the target is expected to have finished executing the
+                    # previous input line and switched the terminal back to
+                    # raw mode, otherwise the kernel may echo the next input
+                    # line it receives and corrupt the captured output.  So
+                    # this must be generous enough to cover a slow target, eg
+                    # running under QEMU emulation.
+                    PTY_TIMEOUT = 0.05
+
                     def get(required=False):
                         rv = b""
                         while True:
-                            ready = select.select([master], [], [], 0.02)
+                            ready = select.select([master], [], [], PTY_TIMEOUT)
                             if ready[0] == [master]:
+                                # Output arrived within the window: read it,
+                                # then repeat the wait and keep accumulating
+                                # in case more output follows.
                                 rv += os.read(master, 1024)
                             else:
+                                # No output within the window.
                                 if not required or rv:
                                     return rv
 

@@ -1,17 +1,19 @@
 name: cc3200 port
 
 on:
-  push:
-  pull_request:
-    paths:
-      - '.github/workflows/*.yml'
-      - 'tools/**'
-      - 'py/**'
-      - 'extmod/**'
-      - 'shared/**'
-      - 'lib/**'
-      - 'drivers/**'
-      - 'ports/cc3200/**'
+  workflow_dispatch:
+#on:
+#  push:
+#  pull_request:
+#    paths:
+#      - '.github/workflows/*.yml'
+#      - 'tools/**'
+#      - 'py/**'
+#      - 'extmod/**'
+#      - 'shared/**'
+#      - 'lib/**'
+#      - 'drivers/**'
+#      - 'ports/cc3200/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

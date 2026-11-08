@@ -1,12 +1,14 @@
 name: Build docs
 
 on:
-  push:
-  pull_request:
-    paths:
-      - docs/**
-      - py/**
-      - tests/cpydiff/**
+  workflow_dispatch:
+#on:
+#  push:
+#  pull_request:
+#    paths:
+#      - docs/**
+#      - py/**
+#      - tests/cpydiff/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

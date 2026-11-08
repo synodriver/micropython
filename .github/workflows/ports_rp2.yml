@@ -1,17 +1,19 @@
 name: rp2 port
 
 on:
-  push:
-  pull_request:
-    paths:
-      - '.github/workflows/*.yml'
-      - 'tools/**'
-      - 'py/**'
-      - 'extmod/**'
-      - 'shared/**'
-      - 'lib/**'
-      - 'drivers/**'
-      - 'ports/rp2/**'
+  workflow_dispatch:
+#on:
+#  push:
+#  pull_request:
+#    paths:
+#      - '.github/workflows/*.yml'
+#      - 'tools/**'
+#      - 'py/**'
+#      - 'extmod/**'
+#      - 'shared/**'
+#      - 'lib/**'
+#      - 'drivers/**'
+#      - 'ports/rp2/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

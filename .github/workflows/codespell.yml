@@ -1,6 +1,8 @@
 name: Check spelling with codespell
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+#on: [push, pull_request]
 
 jobs:
   codespell:

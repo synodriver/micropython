@@ -1,17 +1,19 @@
 name: windows port
 
 on:
-  push:
-  pull_request:
-    paths:
-      - '.github/workflows/*.yml'
-      - 'tools/**'
-      - 'py/**'
-      - 'extmod/**'
-      - 'shared/**'
-      - 'lib/**'
-      - 'ports/unix/**'
-      - 'ports/windows/**'
+  workflow_dispatch:
+#on:
+#  push:
+#  pull_request:
+#    paths:
+#      - '.github/workflows/*.yml'
+#      - 'tools/**'
+#      - 'py/**'
+#      - 'extmod/**'
+#      - 'shared/**'
+#      - 'lib/**'
+#      - 'ports/unix/**'
+#      - 'ports/windows/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

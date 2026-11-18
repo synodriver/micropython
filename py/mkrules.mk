@@ -13,12 +13,24 @@ endif
 
 HELP_BUILD_ERROR ?= "See \033[1;31mhttps://github.com/micropython/micropython/wiki/Build-Troubleshooting\033[0m"
 HELP_MPY_LIB_SUBMODULE ?= "\033[1;31mError: micropython-lib submodule is not initialized.\033[0m Run 'make submodules'"
+HELP_PLUGIN_ERROR ?= "\033[1;31mError: failed building plugin for $(CC).\033[0m Use MICROPY_USE_COMPILER_PLUGIN=none to disable it"
 
 # Extra deps that need to happen before object compilation.
 OBJ_EXTRA_ORDER_DEPS =
 
 # Generate header files.
 OBJ_EXTRA_ORDER_DEPS += $(HEADER_BUILD)/moduledefs.h $(HEADER_BUILD)/root_pointers.h
+
+MICROPY_USE_COMPILER_PLUGIN ?= auto
+ifeq ($(MICROPY_USE_COMPILER_PLUGIN),auto)
+ifneq ($(realpath $(shell $(CC) -print-file-name=plugin/include/gcc-plugin.h)),)
+override MICROPY_USE_COMPILER_PLUGIN = gcc
+endif
+endif
+
+ifeq ($(MICROPY_USE_COMPILER_PLUGIN),gcc)
+include $(TOP)/py/gccplugin.mk
+endif
 
 ifeq ($(MICROPY_ROM_TEXT_COMPRESSION),1)
 # If compression is enabled, trigger the build of compressed.data.h...
@@ -201,12 +213,13 @@ $(HEADER_BUILD):
 	$(MKDIR) -p $@
 
 ifneq ($(MICROPY_MPYCROSS_DEPENDENCY),)
-# Build mpy-cross automatically if needed. Clear USER_C_MODULES and
-# FROZEN_MANIFEST so a port build with either set doesn't leak them into the
-# mpy-cross sub-make and cause manifest.mk there to parse the port's manifest
-# from the wrong cwd.
+# Build mpy-cross automatically if needed. Pin BUILD and clear USER_C_MODULES
+# and FROZEN_MANIFEST so a port build with BUILD=... / either of those set
+# doesn't leak them into the mpy-cross sub-make (BUILD ?= build won't override
+# a defined empty BUILD=; FROZEN_MANIFEST would parse the port manifest from
+# the wrong cwd).
 $(MICROPY_MPYCROSS_DEPENDENCY):
-	$(MAKE) -C "$(abspath $(dir $@)..)" USER_C_MODULES= FROZEN_MANIFEST=
+	$(MAKE) -C "$(abspath $(dir $@)..)" BUILD="$(abspath $(dir $@))" USER_C_MODULES= FROZEN_MANIFEST=
 endif
 
 ifneq ($(FROZEN_DIR),)

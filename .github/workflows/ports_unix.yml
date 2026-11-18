@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_minimal_setup
     - name: Build
       run: tools/ci.sh unix_minimal_build
     - name: Run main test suite
@@ -49,6 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_standard_setup
     - name: Build
       run: tools/ci.sh unix_standard_build
     - name: Run main test suite
@@ -61,6 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_standard_setup
     - name: Build
       run: tools/ci.sh unix_standard_v2_build
     - name: Run main test suite
@@ -73,6 +79,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_standard_setup
     - name: Build
       run: tools/ci.sh unix_standard_error_terse_build
     - name: Run main test suite
@@ -85,6 +93,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_standard_setup
     - name: Build
       run: tools/ci.sh unix_standard_error_none_build
     - name: Run main test suite
@@ -193,6 +203,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_float_setup
     - name: Build
       run: tools/ci.sh unix_float_build
     - name: Run main test suite
@@ -205,6 +217,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_standard_setup
     - name: Build
       run: tools/ci.sh unix_gil_enabled_build
     - name: Run main test suite
@@ -249,6 +263,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
+    - name: Install packages
+      run: tools/ci.sh unix_standard_setup
     - name: Build
       run: tools/ci.sh unix_settrace_stackless_build
     - name: Run main test suite

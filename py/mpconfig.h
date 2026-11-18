@@ -289,6 +289,14 @@ typedef uint64_t mp_uint_t;
 #define MICROPY_ALLOC_QSTR_CHUNK_INIT (128)
 #endif
 
+// A vstr that outgrows its buffer grows to at least alloc + (alloc >> shift):
+// 3 is +12.5% per growth, so building a large string (json.dumps, formatting)
+// takes O(log n) reallocations instead of one per 16 bytes. 0 keeps exact
+// growth of what is needed plus 16 bytes, which uses the least RAM.
+#ifndef MICROPY_ALLOC_VSTR_GROWTH_SHIFT
+#define MICROPY_ALLOC_VSTR_GROWTH_SHIFT (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_EXTRA_FEATURES ? 3 : 0)
+#endif
+
 // Initial amount for lexer indentation level
 #ifndef MICROPY_ALLOC_LEXER_INDENT_INIT
 #define MICROPY_ALLOC_LEXER_INDENT_INIT (10)
@@ -710,6 +718,13 @@ typedef uint64_t mp_uint_t;
 // Whether math.factorial is large, fast and recursive (1) or small and slow (0).
 #ifndef MICROPY_OPT_MATH_FACTORIAL
 #define MICROPY_OPT_MATH_FACTORIAL (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_EXTRA_FEATURES)
+#endif
+
+// Whether to print JSON strings in runs of unescaped bytes rather than byte by
+// byte.  This is much faster for json.dumps() and print() of JSON, but costs
+// about 40 bytes of code size.
+#ifndef MICROPY_OPT_JSON_PRINTING
+#define MICROPY_OPT_JSON_PRINTING (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_FULL_FEATURES)
 #endif
 
 /*****************************************************************************/
@@ -2505,6 +2520,28 @@ typedef time_t mp_timestamp_t;
 #else
 #define MICROPY_USE_GCC_MUL_OVERFLOW_INTRINSIC (0)
 #endif
+#endif
+
+// Whether mp_printf handles the "l" length modifier
+#ifndef MICOPY_PRINTF_L_FORMAT
+#if (MP_INT_MAX > INT_MAX && MP_INT_MAX == LONG_MAX) || defined(MICROPY_UNIX_COVERAGE)
+#define MICOPY_PRINTF_L_FORMAT (1)
+#else
+#define MICOPY_PRINTF_L_FORMAT (0)
+#endif
+#endif
+
+// Whether mp_printf handles the "ll" length modifier
+#ifndef MICOPY_PRINTF_LL_FORMAT
+#if (MP_INT_MAX > LONG_MAX) || defined(MICROPY_UNIX_COVERAGE)
+#define MICOPY_PRINTF_LL_FORMAT (1)
+#else
+#define MICOPY_PRINTF_LL_FORMAT (0)
+#endif
+#endif
+
+#if __GNUC__ >= 12 && MICOPY_PRINTF_LL_FORMAT
+#pragma MPCHECKS mpprint_support_ll
 #endif
 
 #endif // MICROPY_INCLUDED_PY_MPCONFIG_H
